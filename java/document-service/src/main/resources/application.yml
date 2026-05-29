@@ -1,0 +1,38 @@
+server:
+  port: 8081
+  tomcat:
+    threads:
+      max: 50        # Default is 200, reduce to avoid excessive thread overhead
+      min-spare: 10  # Keep minimum threads ready for burst traffic
+    max-connections: 1000
+    accept-count: 200
+    connection-timeout: 30s
+
+spring:
+  application:
+    name: document-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/rag_kb
+    username: postgres
+    password: 2wsxcde3
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+app:
+  upload:
+    dir: ./uploads
+
+logging:
+  level:
+    com.rag.document: DEBUG

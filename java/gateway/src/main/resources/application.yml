@@ -1,0 +1,120 @@
+server:
+  port: 8080
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain
+    min-response-size: 1024
+
+spring:
+  application:
+    name: gateway
+  cloud:
+    gateway:
+      routes:
+        - id: document-service
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/knowledge-bases/**,/api/documents/**
+          filters:
+            - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: documentServiceCircuitBreaker
+                fallbackUri: forward:/fallback/document
+            - name: Retry
+              args:
+                retries: 3
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 200ms
+                  maxBackoff: 2s
+                  factor: 2
+        - id: chat-service
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/chat/**
+          filters:
+            - name: DedupeResponseHeader
+              args:
+                name: Access-Control-Allow-Origin Access-Control-Allow-Credentials
+                strategy: RETAIN_FIRST
+            - name: CircuitBreaker
+              args:
+                name: chatServiceCircuitBreaker
+                fallbackUri: forward:/fallback/chat
+            - name: Retry
+              args:
+                retries: 2
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 200ms
+                  maxBackoff: 2s
+                  factor: 2
+        - id: python-conversations
+          uri: http://localhost:8000
+          predicates:
+            - Path=/api/conversations/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: pythonServiceCircuitBreaker
+                fallbackUri: forward:/fallback/python
+            - name: Retry
+              args:
+                retries: 2
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 200ms
+                  maxBackoff: 2s
+                  factor: 2
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "http://localhost:5173"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders: "*"
+            allowCredentials: true
+
+# Resilience4j Circuit Breaker configuration
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+        slowCallRateThreshold: 60
+        slowCallDurationThreshold: 5s
+    instances:
+      documentServiceCircuitBreaker:
+        baseConfig: default
+      chatServiceCircuitBreaker:
+        baseConfig: default
+      pythonServiceCircuitBreaker:
+        baseConfig: default
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 10s
+    instances:
+      documentServiceCircuitBreaker:
+        baseConfig: default
+      chatServiceCircuitBreaker:
+        baseConfig: default
+      pythonServiceCircuitBreaker:
+        baseConfig: default
+
+logging:
+  level:
+    org.springframework.cloud.gateway: DEBUG
+    io.github.resilience4j: DEBUG

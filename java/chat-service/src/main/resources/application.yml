@@ -1,0 +1,21 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: chat-service
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+python:
+  base-url: http://localhost:8000
+
+cache:
+  redis:
+    ttl-hours: 24
+
+logging:
+  level:
+    com.rag.chat: DEBUG
