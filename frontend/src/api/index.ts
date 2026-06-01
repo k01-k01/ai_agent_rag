@@ -97,10 +97,14 @@ export interface ChatMessage {
 }
 
 export interface SSEChatEvent {
-  type: 'text' | 'agent' | 'conversation_id' | 'sources' | 'done' | 'error';
+  type: 'text' | 'agent' | 'conversation_id' | 'sources' | 'done' | 'error' | 'thinking' | 'observation' | 'tool_call' | 'evaluation';
   content?: string;
   conversationId?: string;
+  args?: Record<string, any>;  // tool_call 事件的参数
 }
+
+
+
 
 /**
  * 发送聊天消息并通过 SSE 接收流式响应

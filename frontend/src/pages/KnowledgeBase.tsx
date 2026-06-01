@@ -437,7 +437,7 @@ function KnowledgeBase() {
         <div className="fixed inset-0 flex items-center justify-center z-50 backdrop-blur-sm bg-black/30">
           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold">📄 文档摘要</h2>
+              <h2 className="text-lg font-bold">📄 提问导读</h2>
               <button
                 onClick={() => setSummaryDoc(null)}
                 className="text-gray-400 hover:text-gray-600 text-xl leading-none"

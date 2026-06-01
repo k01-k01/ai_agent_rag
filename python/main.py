@@ -31,38 +31,6 @@ async def _cached_write_with_semaphore(coro):
         await coro
 
 
-def _keyword_pre_check(message: str, knowledge_base_id: str | None = None) -> str | None:
-    """
-    关键词前置检查（快速路径，约 1ms）
-    
-    在调用 LLM 路由之前，先通过关键词匹配快速判断路由类型。
-    
-    Args:
-        message: 用户消息
-        knowledge_base_id: 知识库 ID（可选）
-    
-    Returns:
-        "rag" 或 "chat"（关键词匹配成功），None（无法确定，需要 LLM 判断）
-    """
-    # 问候语 → 直接返回 chat
-    greetings = ["你好", "您好", "hi", "hello", "hey", "嗨", "早上好", "下午好", "晚上好", "再见", "拜拜", "bye"]
-    message_lower = message.lower().strip()
-    if any(greeting in message_lower for greeting in greetings) and len(message) < 20:
-        return "chat"
-    
-    # 明确的知识库关键词 → 直接返回 rag
-    rag_keywords = [
-        "根据知识库", "知识库中", "知识库里的", "在知识库",
-        "根据文档", "文档中", "文档里的", "在文档",
-        "检索知识库", "搜索知识库", "查询知识库",
-        "知识库", "文档内容",
-    ]
-    if any(keyword in message_lower for keyword in rag_keywords):
-        return "rag"
-    
-    # 无法确定，需要 LLM 判断
-    return None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -139,16 +107,14 @@ async def _stream_chat_response(
     conversation_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
-    核心聊天流式生成逻辑
+    核心聊天流式生成逻辑（基于 LangGraph Agent）
     1. 检查二级缓存（语义匹配）
-    2. 未命中时：路由判断（rag / chat）
-    3. 调用对应 Agent 生成流式回答
+    2. 未命中时：LangGraph Agent 自主决策（检索知识库 or 直接回答）
+    3. Agent 流式输出思考过程和回答
     4. 保存对话历史到数据库
     5. 异步写入两级缓存
     """
-    from modules.agents.router import get_router
-    from modules.agents.chat_agent import get_chat_agent
-    from modules.agents.rag_agent import get_rag_agent
+    from modules.agents.agent import get_agent
     from modules.cache.semantic_cache import get_semantic_cache
     from modules.conversation.manager import get_conversation_manager
 
@@ -210,9 +176,6 @@ async def _stream_chat_response(
             )
         )
 
-        # 发送 agent 类型事件
-        yield {"event": "agent", "data": json.dumps({"type": "agent", "content": cached_agent_type})}
-
         # 发送 conversation_id 事件
         yield {
             "event": "conversation_id",
@@ -236,25 +199,7 @@ async def _stream_chat_response(
 
         return
 
-    logger.debug(f"L2 cache MISS for message: '{message[:50]}...', proceeding to router")
-
-    # ========== 关键词前置检查（快速路径，约 1ms） ==========
-    # 先做关键词匹配，命中则直接确定路由，避免调用 LLM
-    route_type = _keyword_pre_check(message, knowledge_base_id)
-
-    # 关键词检查无法确定时，才调用 LLM 路由判断
-    if route_type is None:
-        try:
-            router = get_router()
-            route_type = await router.route(message, knowledge_base_id)
-        except Exception as e:
-            logger.error(f"Router error: {e}, defaulting to chat")
-            route_type = "chat"
-    else:
-        logger.info(f"Keyword pre-check determined route: {route_type}")
-
-    # 发送 agent 类型事件
-    yield {"event": "agent", "data": json.dumps({"type": "agent", "content": route_type})}
+    logger.debug(f"L2 cache MISS for message: '{message[:50]}...', proceeding to Agent")
 
     # 发送 conversation_id 事件
     yield {
@@ -262,56 +207,129 @@ async def _stream_chat_response(
         "data": json.dumps({"type": "conversation_id", "content": conversation_id}),
     }
 
+    # ========== LangGraph Agent 自主决策 ==========
+    agent = get_agent()
+    full_response = ""
+    sources_data = None
+    agent_type = "chat"  # 默认类型
+
     try:
-        if route_type == "rag":
-            agent = get_rag_agent()
-            full_response = ""
-            sources_data = None
-            async for chunk in agent.stream_chat(message, knowledge_base_id, history):
-                if chunk.startswith("__SOURCES__:"):
-                    sources_json = chunk[len("__SOURCES__:"):].strip()
-                    try:
-                        sources_data = json.loads(sources_json)
-                        yield {
-                            "event": "sources",
-                            "data": json.dumps({"type": "sources", "content": sources_json}),
-                        }
-                        logger.info(f"Sent {len(sources_data)} sources to frontend")
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Failed to parse sources JSON: {e}")
-                    continue
+        async for event in agent.stream(message, knowledge_base_id, conversation_id):
+            event_type = event.get("type")
 
-                if chunk.startswith("🔍") or chunk.startswith("✅"):
-                    yield {"event": "message", "data": json.dumps({"type": "text", "content": chunk})}
-                    continue
+            if event_type == "thinking":
+                # LLM 的真实思考过程（决定调用工具前的推理）
+                yield {
+                    "event": "message",
+                    "data": json.dumps({"type": "thinking", "content": event["content"]}),
+                }
 
-                full_response += chunk
-                yield {"event": "message", "data": json.dumps({"type": "text", "content": chunk})}
-        else:
-            agent = get_chat_agent()
-            full_response = ""
-            async for chunk in agent.stream_chat(message, history):
-                full_response += chunk
-                yield {"event": "message", "data": json.dumps({"type": "text", "content": chunk})}
+            elif event_type == "tool_call":
+                # Agent 决定调用工具
+                tool_name = event.get("tool", "")
+                tool_args = event.get("args", {})
+
+                # 转发 tool_call 事件给前端（用于展示工具调用记录）
+                yield {
+                    "event": "message",
+                    "data": json.dumps({
+                        "type": "tool_call",
+                        "content": tool_name,
+                        "args": tool_args,
+                    }),
+                }
+
+                if tool_name == "retrieve_knowledge":
+                    agent_type = "rag"
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({"type": "agent", "content": "🔧 retrieve_knowledge"}),
+                    }
+                elif tool_name == "summarize_document":
+                    agent_type = "rag"
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({"type": "agent", "content": "📝 summarize_document"}),
+                    }
+                elif tool_name == "get_current_datetime":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({"type": "agent", "content": "🕐 get_current_datetime"}),
+                    }
+
+            elif event_type == "tool_result":
+                # 工具执行结果（不直接发送给前端，Agent 会基于此生成回答）
+                pass
+
+            elif event_type == "evaluation":
+                # LLM 对工具结果的评估思考（展示给前端看 Agent "评估了什么"）
+                yield {
+                    "event": "message",
+                    "data": json.dumps({"type": "evaluation", "content": event["content"]}),
+                }
+
+            elif event_type == "observation":
+                # Agent 观察工具执行结果（展示给前端看 Agent "看到了什么"）
+                yield {
+                    "event": "message",
+                    "data": json.dumps({"type": "observation", "content": event["content"]}),
+                }
+
+            elif event_type == "sources":
+                # 检索来源信息
+                sources_data = event.get("content")
+                # 将 sources 数据直接作为 JSON 字符串放在 content 字段中
+                # 前端收到后通过 JSON.parse(event.content) 解析为数组
+                yield {
+                    "event": "message",
+                    "data": json.dumps({
+                        "type": "sources",
+                        "content": json.dumps(sources_data, ensure_ascii=False),
+                    }),
+                }
+                logger.info(f"Sent {len(sources_data)} sources to frontend")
+
+            elif event_type == "text":
+                # Agent 生成的文本内容
+                content = event["content"]
+                full_response += content
+                yield {
+                    "event": "message",
+                    "data": json.dumps({"type": "text", "content": content}),
+                }
+
+            elif event_type == "error":
+                # Agent 出错
+                yield {
+                    "event": "error",
+                    "data": json.dumps({
+                        "type": "error",
+                        "content": event["content"],
+                    }),
+                }
+                return
 
         # ========== 保存对话历史到数据库（批量操作，单次事务） ==========
-        await conv_manager.add_messages_batch(conversation_id, [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": full_response,
-             "agent_type": route_type, "sources": sources_data if route_type == "rag" else None},
-        ])
-
-        # ========== 异步写入两级缓存（受信号量控制并发） ==========
         if full_response:
-            rag_sources = sources_data if route_type == "rag" else None
+            await conv_manager.add_messages_batch(conversation_id, [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": full_response,
+                 "agent_type": agent_type, "sources": sources_data},
+            ])
+
+            # ========== 异步写入两级缓存（受信号量控制并发） ==========
             asyncio.create_task(
                 _cached_write_with_semaphore(
-                    semantic_cache.set_cached_answer(message, full_response, route_type, rag_sources, knowledge_base_id)
+                    semantic_cache.set_cached_answer(
+                        message, full_response, agent_type, sources_data, knowledge_base_id
+                    )
                 )
             )
             asyncio.create_task(
                 _cached_write_with_semaphore(
-                    semantic_cache.notify_java_set_cache(message, full_response, route_type, rag_sources, knowledge_base_id)
+                    semantic_cache.notify_java_set_cache(
+                        message, full_response, agent_type, sources_data, knowledge_base_id
+                    )
                 )
             )
 
@@ -355,6 +373,9 @@ async def chat_stream_post(
 
     if not message:
         return {"error": "message is required"}
+    
+    if not knowledge_base_id:
+        return {"error": "knowledge_base_id is required"}
 
     return EventSourceResponse(
         _stream_chat_response(message, knowledge_base_id, conversation_id)

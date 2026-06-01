@@ -1,3 +1,28 @@
+/* highlight.js 代码高亮主题 - 必须在 @tailwind 之前 */
+@import 'highlight.js/styles/github.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* prose 代码块样式微调 */
+.prose pre {
+
+  background-color: #f6f8fa;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+}
+
+.prose code {
+  font-size: 0.8125em;
+  padding: 0.15em 0.35em;
+  background-color: rgba(175, 184, 193, 0.2);
+  border-radius: 4px;
+}
+
+.prose pre code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: inherit;
+}
