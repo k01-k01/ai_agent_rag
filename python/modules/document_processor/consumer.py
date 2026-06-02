@@ -250,19 +250,21 @@ async def start_consumer():
     redis = aioredis.from_url(f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}")
 
     try:
-        # 确保 stream 存在：先检查 key 是否存在，不存在则创建空 stream
-        stream_exists = await redis.exists(STREAM_KEY)
-        if not stream_exists:
-            # 发送一个空消息来创建 stream
-            await redis.xadd(STREAM_KEY, {"init": "1"}, maxlen=1)
-            logger.info(f"Created stream '{STREAM_KEY}' with init message")
-
-        # 创建消费者组（如果不存在）
+        # 确保 Stream 和 Consumer Group 存在
+        # 先尝试创建 Consumer Group（mkstream=True 会自动创建 Stream）
         try:
             await redis.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
+            logger.info(f"Created stream '{STREAM_KEY}' and consumer group '{GROUP_NAME}'")
         except aioredis.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
+            if "BUSYGROUP" in str(e):
+                # Group 已存在，正常情况
+                logger.info(f"Consumer group '{GROUP_NAME}' already exists on stream '{STREAM_KEY}'")
+            else:
+                # 其他错误（如 Stream 不存在但 mkstream 未生效），手动创建 Stream 再重试
+                logger.warning(f"Failed to create consumer group: {e}, trying to create stream first")
+                await redis.xadd(STREAM_KEY, {"init": "1"}, maxlen=1)
+                await redis.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
+                logger.info(f"Created stream '{STREAM_KEY}' and consumer group '{GROUP_NAME}' after retry")
 
         logger.info(
             f"Starting document processing consumer on stream '{STREAM_KEY}', "
@@ -345,7 +347,18 @@ async def start_consumer():
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"Consumer loop error: {e}, retrying in 5s...")
+                error_msg = str(e)
+                # NOGROUP 错误：Stream 或消费者组被删除（如 FLUSHALL 清空 Redis）
+                # 自动重建 Stream 和消费者组，确保 consumer 可以继续工作
+                if "NOGROUP" in error_msg:
+                    logger.warning(f"Consumer group or stream lost (NOGROUP), attempting to recreate...")
+                    try:
+                        await redis.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
+                        logger.info(f"Successfully recreated stream '{STREAM_KEY}' and consumer group '{GROUP_NAME}' after NOGROUP error")
+                    except Exception as create_err:
+                        logger.error(f"Failed to recreate consumer group: {create_err}")
+                else:
+                    logger.error(f"Consumer loop error: {e}, retrying in 5s...")
                 await asyncio.sleep(5)
 
     except asyncio.CancelledError:

@@ -285,8 +285,8 @@ async def _stream_chat_response(
             elif event_type == "sources":
                 # 检索来源信息
                 sources_data = event.get("content")
-                # 将 sources 数据直接作为 JSON 字符串放在 content 字段中
-                # 前端收到后通过 JSON.parse(event.content) 解析为数组
+                # sources_data 是 Python 对象（由 agent.py 中的 json.loads 解析）
+                # 序列化为 JSON 字符串，前端通过 JSON.parse(event.content) 解析为数组
                 yield {
                     "event": "message",
                     "data": json.dumps({
@@ -295,6 +295,8 @@ async def _stream_chat_response(
                     }),
                 }
                 logger.info(f"Sent {len(sources_data)} sources to frontend")
+
+
 
             elif event_type == "text":
                 # Agent 生成的文本内容
@@ -510,19 +512,58 @@ async def update_conversation_title(conversation_id: str, request: dict):
 @app.post("/api/cache/l2/clear")
 async def clear_l2_cache():
     """
-    清空二级缓存（pgvector cache_entries 表）。
+    清空所有缓存（一级 Redis + 二级 pgvector）。
+    先清空 Java 端的一级缓存（Redis），再清空二级缓存（pgvector cache_entries 表），
+    确保清空期间进入的请求不会命中任何缓存，一定会走 Agent 重新生成。
     """
     from db_pool import get_db_pool
+    import config as _config
+
+    l1_cleared = False
+    l2_cleared = False
+    errors = []
 
     try:
+        # 第一步：先清空 Java 端的一级缓存（Redis），避免后续请求命中 L1
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(f"{_config.JAVA_CHAT_SERVICE_URL}/api/chat/cache/l1/clear")
+                if response.status_code == 200:
+                    logger.info("Java L1 cache cleared successfully")
+                    l1_cleared = True
+                else:
+                    err_msg = f"Java L1 cache clear returned status={response.status_code}"
+                    logger.warning(err_msg)
+                    errors.append(err_msg)
+        except Exception as notify_err:
+            err_msg = f"Failed to notify Java to clear L1 cache: {notify_err}"
+            logger.warning(err_msg)
+            errors.append(err_msg)
+
+        # 第二步：再清空二级缓存（pgvector），确保后续请求到 Python 端也不会命中 L2
         pool = await get_db_pool()
         async with pool.acquire() as conn:
-            result = await conn.execute("DELETE FROM cache_entries")
-            logger.info("L2 cache cleared successfully")
-            return {"success": True, "message": "二级缓存已清空"}
+            await conn.execute("DELETE FROM cache_entries")
+            logger.info("L2 cache (pgvector) cleared successfully")
+            l2_cleared = True
+
+        if l1_cleared and l2_cleared:
+            return {"success": True, "message": "一级缓存（Redis）和二级缓存（pgvector）已全部清空"}
+        else:
+            detail = "缓存清空不完全"
+            if not l1_cleared:
+                detail += "，一级缓存（Redis）清空失败"
+            if not l2_cleared:
+                detail += "，二级缓存（pgvector）清空失败"
+            if errors:
+                detail += f"：{'；'.join(errors)}"
+            raise HTTPException(status_code=500, detail=detail)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to clear L2 cache: {e}")
-        raise HTTPException(status_code=500, detail=f"清空二级缓存失败: {str(e)}")
+        logger.error(f"Failed to clear cache: {e}")
+        raise HTTPException(status_code=500, detail=f"清空缓存失败: {str(e)}")
 
 
 # ==================== LLM 配置 API ====================

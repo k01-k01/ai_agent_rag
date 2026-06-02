@@ -27,8 +27,7 @@ import {
   deleteConversation,
   getCurrentLLMConfig,
   updateLLMConfig,
-  clearL1Cache,
-  clearL2Cache,
+  clearAllCache,
   KnowledgeBase,
   ChatMessage,
   SSEChatEvent,
@@ -65,7 +64,7 @@ function Chat() {
   const [isSavingLlmConfig, setIsSavingLlmConfig] = useState(false);
   const [llmConfigMessage, setLlmConfigMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [cacheMessage, setCacheMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [clearingCache, setClearingCache] = useState<'l1' | 'l2' | null>(null);
+  const [clearingCache, setClearingCache] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -307,14 +306,17 @@ function Chat() {
     try {
       const convData = await getConversation(convId);
       if (convData) {
-        const loadedMessages: ExtendedChatMessage[] = convData.messages.map((msg: any) => ({
-          id: msg.id || `msg-${Date.now()}-${Math.random()}`,
-          role: msg.role as 'user' | 'assistant',
-          content: msg.content,
-          agentType: msg.agent_type as 'rag' | 'chat' | undefined,
-          sources: msg.sources,
-          timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
-        }));
+        // 直接使用后端返回的原始顺序（后端已按 created_at ASC, id ASC 排序），
+        // 不再依赖前端 timestamp 排序，避免因 JS Date 精度不足（仅毫秒）导致微秒级时间差无法区分
+        const loadedMessages: ExtendedChatMessage[] = convData.messages
+          .map((msg: any) => ({
+            id: msg.id || `msg-${Date.now()}-${Math.random()}`,
+            role: msg.role as 'user' | 'assistant',
+            content: msg.content,
+            agentType: msg.agent_type as 'rag' | 'chat' | undefined,
+            sources: msg.sources,
+            timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
+          }));
         setMessages(loadedMessages);
         setConversationId(convId);
       }
@@ -382,8 +384,11 @@ function Chat() {
     }
   }, [handleSend]);
 
-  const formatTime = (dateStr: string) => {
+  const formatTime = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '';
     const date = new Date(dateStr);
+    // 检查日期是否有效
+    if (isNaN(date.getTime())) return '';
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -417,36 +422,19 @@ function Chat() {
     return msg.toolCalls || null;
   };
 
-  // 清除一级缓存（Redis）
-  const handleClearL1Cache = useCallback(async () => {
-    if (!window.confirm('确定要清空一级缓存（Redis）吗？')) return;
-    setClearingCache('l1');
+  // 清除所有缓存（一级 Redis + 二级 pgvector）
+  const handleClearAllCache = useCallback(async () => {
+    if (!window.confirm('确定要清空所有缓存（一级+二级）吗？')) return;
+    setClearingCache(true);
     setCacheMessage(null);
     try {
-      await clearL1Cache();
-      setCacheMessage({ type: 'success', text: '✅ 一级缓存（Redis）已清空' });
+      await clearAllCache();
+      setCacheMessage({ type: 'success', text: '✅ 所有缓存已清空' });
     } catch (err) {
-      console.error('Failed to clear L1 cache:', err);
-      setCacheMessage({ type: 'error', text: '❌ 清空一级缓存失败，请检查服务是否正常运行' });
+      console.error('Failed to clear cache:', err);
+      setCacheMessage({ type: 'error', text: '❌ 清空缓存失败，请检查服务是否正常运行' });
     } finally {
-      setClearingCache(null);
-      setTimeout(() => setCacheMessage(null), 3000);
-    }
-  }, []);
-
-  // 清除二级缓存（pgvector）
-  const handleClearL2Cache = useCallback(async () => {
-    if (!window.confirm('确定要清空二级缓存（语义缓存）吗？')) return;
-    setClearingCache('l2');
-    setCacheMessage(null);
-    try {
-      await clearL2Cache();
-      setCacheMessage({ type: 'success', text: '✅ 二级缓存（语义缓存）已清空' });
-    } catch (err) {
-      console.error('Failed to clear L2 cache:', err);
-      setCacheMessage({ type: 'error', text: '❌ 清空二级缓存失败，请检查服务是否正常运行' });
-    } finally {
-      setClearingCache(null);
+      setClearingCache(false);
       setTimeout(() => setCacheMessage(null), 3000);
     }
   }, []);
@@ -533,33 +521,14 @@ function Chat() {
               </svg>
             </button>
 
-            {/* 清除一级缓存按钮（Redis） */}
+            {/* 清空所有缓存按钮（一级+二级） */}
             <button
-              onClick={handleClearL1Cache}
-              disabled={clearingCache === 'l1'}
-              className="p-2 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded-lg transition-colors disabled:opacity-50"
-              title="清空一级缓存（Redis）"
-            >
-              {clearingCache === 'l1' ? (
-                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              ) : (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              )}
-            </button>
-
-            {/* 清除二级缓存按钮（pgvector） */}
-            <button
-              onClick={handleClearL2Cache}
-              disabled={clearingCache === 'l2'}
+              onClick={handleClearAllCache}
+              disabled={clearingCache}
               className="p-2 text-purple-500 hover:text-purple-700 hover:bg-purple-50 rounded-lg transition-colors disabled:opacity-50"
-              title="清空二级缓存（语义缓存）"
+              title="清空所有缓存（一级+二级）"
             >
-              {clearingCache === 'l2' ? (
+              {clearingCache ? (
                 <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />

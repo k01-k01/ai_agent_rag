@@ -4,8 +4,11 @@
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+# 北京时间 (UTC+8)
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 from db_pool import get_db_pool
 
@@ -41,8 +44,8 @@ class ConversationManager:
                     {
                         "id": str(row["id"]),
                         "title": row["title"],
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                        "created_at": row["created_at"].replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).isoformat() if row["created_at"] else None,
+                        "updated_at": row["updated_at"].replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).isoformat() if row["updated_at"] else None,
                         "message_count": row["message_count"],
                     }
                     for row in rows
@@ -78,7 +81,7 @@ class ConversationManager:
                     SELECT id, role, content, agent_type, sources, created_at
                     FROM conversation_messages
                     WHERE conversation_id = $1
-                    ORDER BY created_at ASC
+                    ORDER BY created_at ASC, id ASC, CASE WHEN role = 'user' THEN 0 ELSE 1 END ASC
                     LIMIT 40
                     """,
                     conversation_id,
@@ -90,7 +93,7 @@ class ConversationManager:
                         "id": str(row["id"]),
                         "role": row["role"],
                         "content": row["content"],
-                        "timestamp": row["created_at"].isoformat() if row["created_at"] else None,
+                        "timestamp": row["created_at"].replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).isoformat() if row["created_at"] else None,
                     }
                     if row["agent_type"]:
                         msg["agent_type"] = row["agent_type"]
@@ -104,8 +107,8 @@ class ConversationManager:
                 return {
                     "id": str(conv_row["id"]),
                     "title": conv_row["title"],
-                    "created_at": conv_row["created_at"].isoformat() if conv_row["created_at"] else None,
-                    "updated_at": conv_row["updated_at"].isoformat() if conv_row["updated_at"] else None,
+                    "created_at": conv_row["created_at"].replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).isoformat() if conv_row["created_at"] else None,
+                    "updated_at": conv_row["updated_at"].replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).isoformat() if conv_row["updated_at"] else None,
                     "messages": messages,
                 }
         except Exception as e:
@@ -135,56 +138,6 @@ class ConversationManager:
         except Exception as e:
             logger.error(f"Error creating conversation: {e}")
             return None
-
-    async def add_message(
-        self,
-        conversation_id: str,
-        role: str,
-        content: str,
-        agent_type: Optional[str] = None,
-        sources: Optional[list] = None,
-    ) -> bool:
-        """
-        向对话中添加消息。
-
-        Args:
-            conversation_id: 对话 ID
-            role: 角色 ('user' 或 'assistant')
-            content: 消息内容
-            agent_type: Agent 类型（仅 assistant 消息）
-            sources: 检索来源（仅 assistant 消息）
-
-        Returns:
-            bool: 是否成功
-        """
-        if not content:
-            logger.warning("Empty message content, skipping")
-            return False
-
-        try:
-            sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
-            pool = await get_db_pool()
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO conversation_messages (conversation_id, role, content, agent_type, sources)
-                    VALUES ($1, $2, $3, $4, $5)
-                    """,
-                    conversation_id,
-                    role,
-                    content,
-                    agent_type,
-                    sources_json,
-                )
-                # 更新对话的 updated_at 时间
-                await conn.execute(
-                    "UPDATE conversations SET updated_at = NOW() WHERE id = $1",
-                    conversation_id,
-                )
-            return True
-        except Exception as e:
-            logger.error(f"Error adding message to conversation {conversation_id}: {e}")
-            return False
 
     async def update_title(self, conversation_id: str, title: str) -> bool:
         """
@@ -262,18 +215,21 @@ class ConversationManager:
             pool = await get_db_pool()
             async with pool.acquire() as conn:
                 async with conn.transaction():
-                    for msg in messages:
+                    for i, msg in enumerate(messages):
                         sources_json = json.dumps(msg.get("sources"), ensure_ascii=False) if msg.get("sources") else None
+                        # 为每条消息显式设置 created_at，确保 user 消息在 assistant 消息之前
+                        # 使用 NOW() + i * INTERVAL '1 microsecond' 保证同一批消息的时间戳严格递增
                         await conn.execute(
                             """
-                            INSERT INTO conversation_messages (conversation_id, role, content, agent_type, sources)
-                            VALUES ($1, $2, $3, $4, $5)
+                            INSERT INTO conversation_messages (conversation_id, role, content, agent_type, sources, created_at)
+                            VALUES ($1, $2, $3, $4, $5, NOW() + ($6 || ' microseconds')::INTERVAL)
                             """,
                             conversation_id,
                             msg["role"],
                             msg["content"],
                             msg.get("agent_type"),
                             sources_json,
+                            str(i),  # 第0条（user）用 NOW()，第1条（assistant）用 NOW() + 1微秒
                         )
                     # 批量更新一次 updated_at
                     await conn.execute(

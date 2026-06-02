@@ -208,11 +208,20 @@ export function sendChatMessage(
           buffer = buffer.slice(lastIndex);
         } else {
           // 如果没有匹配到任何完整事件，但 buffer 已经很大了，说明可能有问题
-          if (buffer.length > 500) {
-            console.warn('[SSE] Buffer too large without match, resetting. Buffer:', buffer.slice(0, 200));
-            buffer = '';
+          // 改进：不要暴力清空 buffer，而是保留从最后一个 "event:" 开始的部分
+          // 这样可以避免因单个长 data 行（如 sources JSON）跨 chunk 边界时丢失后续事件
+          if (buffer.length > 50000) {
+            const lastEventIndex = buffer.lastIndexOf('event:');
+            if (lastEventIndex >= 0) {
+              console.warn('[SSE] Buffer too large, trimming from last event marker. Buffer size:', buffer.length);
+              buffer = buffer.slice(lastEventIndex);
+            } else {
+              console.warn('[SSE] Buffer too large without any event marker, resetting. Buffer size:', buffer.length);
+              buffer = '';
+            }
           }
         }
+
       }
     })
     .catch((err) => {
@@ -280,18 +289,11 @@ export function updateConversationTitle(id: string, title: string): Promise<{ su
 // ==================== 缓存管理 API ====================
 
 /**
- * 清除一级缓存（Redis）
- * 调用 Java chat-service 的 /api/chat/cache/l1/clear 接口
+ * 清除所有缓存（一级 Redis + 二级 pgvector）
+ * 调用 Python 后端的 /api/cache/l2/clear 接口，
+ * Python 端会自动联动清空 Java 端的一级缓存（Redis）。
  */
-export function clearL1Cache(): Promise<{ success: boolean; message: string }> {
-  return api.post('/chat/cache/l1/clear') as Promise<{ success: boolean; message: string }>;
-}
-
-/**
- * 清除二级缓存（pgvector cache_entries 表）
- * 调用 Python 后端的 /api/cache/l2/clear 接口
- */
-export function clearL2Cache(): Promise<{ success: boolean; message: string }> {
+export function clearAllCache(): Promise<{ success: boolean; message: string }> {
   return api.post('/cache/l2/clear') as Promise<{ success: boolean; message: string }>;
 }
 

@@ -8,9 +8,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 缓存回调控制器
@@ -59,13 +58,11 @@ public class CacheController {
             ));
         }
 
-        // URL 解码：Python 端传过来的 question 可能是 URL 编码后的字符串
-        // 需要解码为正常中文，确保与前端请求的 question 生成的 MD5 key 一致
-        String decodedQuestion = URLDecoder.decode(question, StandardCharsets.UTF_8);
-        if (!decodedQuestion.equals(question)) {
-            logger.debug("URL decoded question: '{}' -> '{}'", question, decodedQuestion);
-            question = decodedQuestion;
-        }
+        // 注意：不要对 question 做 URL 解码！
+        // Python 端是通过 JSON body 发送的 POST 请求，不是 URL 参数，
+        // 如果使用 URLDecoder.decode，会将问题中的 '+' 号错误解码为空格，
+        // 导致规范化后的 MD5 key 与前端请求生成的 key 不一致，造成 L1 缓存永远无法命中。
+        // 详见：https://github.com/k01-k01/ai_agent_rag/issues/xxx
 
         // 写入缓存（含 agent_type、sources 和 knowledge_base_id）
         cacheService.setCachedAnswer(question, answer, agentType, sources, knowledgeBaseId);
@@ -81,17 +78,23 @@ public class CacheController {
 
     /**
      * 清空一级缓存（Redis）
-     * 使用 FLUSHDB 清空当前数据库的所有 key
+     * 只删除缓存相关的 key（以 cache: 前缀开头的），
+     * 不会误删 documents:processing Stream 等系统 key。
      */
     @PostMapping("/l1/clear")
     public ResponseEntity<Map<String, Object>> clearL1Cache() {
         try {
-            // 获取 Redis 连接并清空当前数据库
-            redisTemplate.getConnectionFactory().getConnection().flushDb();
-            logger.info("L1 cache (Redis) cleared successfully");
+            // 只删除缓存相关的 key，不误删 Stream 等系统 key
+            Set<String> cacheKeys = redisTemplate.keys("cache:*");
+            int deletedCount = 0;
+            if (cacheKeys != null && !cacheKeys.isEmpty()) {
+                deletedCount = cacheKeys.size();
+                redisTemplate.delete(cacheKeys);
+            }
+            logger.info("L1 cache (Redis) cleared successfully, deleted {} cache keys", deletedCount);
             return ResponseEntity.ok(Map.of(
                     "success", true,
-                    "message", "一级缓存（Redis）已清空"
+                    "message", "一级缓存（Redis）已清空，共删除 " + deletedCount + " 个缓存项"
             ));
         } catch (Exception e) {
             logger.error("Failed to clear L1 cache: {}", e.getMessage(), e);
