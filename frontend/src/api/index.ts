@@ -275,4 +275,35 @@ export function updateConversationTitle(id: string, title: string): Promise<{ su
   return api.put(`/conversations/${id}/title`, { title }) as Promise<{ success: boolean; message: string }>;
 }
 
+// ==================== LLM 配置 API ====================
+
+export interface LLMConfig {
+  provider: string;
+  model: string;
+}
+
+export interface LLMProviderUpdateResponse {
+  success: boolean;
+  provider: string;
+  model: string;
+  message: string;
+}
+
+/**
+ * 获取当前 LLM 配置
+ */
+export function getCurrentLLMConfig(): Promise<LLMConfig> {
+  return api.get('/llm/config') as Promise<LLMConfig>;
+}
+
+/**
+ * 更新 DeepSeek LLM 配置
+ * @param config 要更新的配置项
+ */
+export function updateLLMConfig(
+  config: { api_key?: string; api_base?: string; model?: string }
+): Promise<LLMProviderUpdateResponse> {
+  return api.put('/llm/config', config) as Promise<LLMProviderUpdateResponse>;
+}
+
 export default api;

@@ -335,7 +335,7 @@ function KnowledgeBase() {
                                 onClick={() => setSummaryDoc(doc)}
                                 className="px-2 py-0.5 text-xs text-blue-500 border border-blue-200 rounded hover:bg-blue-50 transition"
                               >
-                                提问导读
+                                文档目录
                               </button>
                             )}
                             <button
@@ -432,42 +432,118 @@ function KnowledgeBase() {
         </div>
       )}
 
-      {/* 摘要弹窗 */}
+      {/* 摘要弹窗 - 展示关键词和关键句 */}
       {summaryDoc && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 backdrop-blur-sm bg-black/30">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold">📄 提问导读</h2>
-              <button
-                onClick={() => setSummaryDoc(null)}
-                className="text-gray-400 hover:text-gray-600 text-xl leading-none"
-              >
-                ✕
-              </button>
-            </div>
-            <p className="text-sm text-gray-500 mb-4 truncate">{summaryDoc.name}</p>
-            <div className="bg-gray-50 rounded p-4 max-h-80 overflow-y-auto">
-              {summaryDoc.summary?.split('\n').map((line, i) => {
-                const trimmed = line.trim();
-                if (!trimmed) return null;
-                return (
-                  <p key={i} className="text-sm text-gray-700 mb-2 leading-relaxed">
-                    {trimmed}
-                  </p>
-                );
-              })}
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setSummaryDoc(null)}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
+        <SummaryModal
+          doc={summaryDoc}
+          onClose={() => setSummaryDoc(null)}
+        />
       )}
+    </div>
+  );
+}
+
+// ==================== 目录弹窗组件 ====================
+
+interface TocEntry {
+  level: number;
+  title: string;
+}
+
+interface TocData {
+  toc: TocEntry[];
+}
+
+function SummaryModal({ doc, onClose }: { doc: DocumentItem; onClose: () => void }) {
+  // 解析 JSON 格式的 summary
+  let tocData: TocData | null = null;
+  try {
+    if (doc.summary) {
+      tocData = JSON.parse(doc.summary) as TocData;
+    }
+  } catch {
+    // 兼容旧格式（纯文本）
+  }
+
+  // 根据层级获取样式
+  const getLevelStyle = (level: number) => {
+    const baseClasses = "text-sm text-gray-700 py-1";
+    const paddingLeft = Math.min(level - 1, 5) * 4; // 缩进，最大20px
+    
+    switch (level) {
+      case 1:
+        return `${baseClasses} font-bold text-base`;
+      case 2:
+        return `${baseClasses} font-semibold`;
+      case 3:
+        return `${baseClasses} pl-${paddingLeft / 4}`;
+      default:
+        return `${baseClasses} pl-${paddingLeft / 4} text-gray-600`;
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center z-50 backdrop-blur-sm bg-black/30">
+      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold">📑 文档目录</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+          >
+            ✕
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-4 truncate">{doc.name}</p>
+
+        <div className="flex-1 overflow-y-auto">
+          {tocData && tocData.toc && tocData.toc.length > 0 ? (
+            <>
+              <p className="text-sm text-gray-500 mb-4">
+                共 {tocData.toc.length} 个标题
+              </p>
+              <div className="border rounded-lg divide-y">
+                {tocData.toc.map((entry, i) => (
+                  <div
+                    key={i}
+                    className={`px-4 py-2 hover:bg-gray-50 ${
+                      entry.level === 1 ? 'bg-blue-50' : ''
+                    }`}
+                    style={{ paddingLeft: `${Math.min(entry.level - 1, 5) * 16}px` }}
+                  >
+                    <div className="flex items-center gap-2">
+                      {entry.level === 1 ? (
+                        <span className="flex-shrink-0 w-5 h-5 flex items-center justify-center bg-blue-600 text-white text-xs font-bold rounded">
+                          {i + 1}
+                        </span>
+                      ) : (
+                        <span className="flex-shrink-0 text-gray-300">├─</span>
+                      )}
+                      <span className={`${entry.level === 1 ? 'font-bold text-blue-800' : 'text-gray-600'}`}>
+                        {entry.title}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="text-center py-12 text-gray-400">
+              <p className="text-lg mb-2">📭 暂无目录信息</p>
+              <p className="text-sm">该文档未能提取出目录结构</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end mt-4 pt-4 border-t">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

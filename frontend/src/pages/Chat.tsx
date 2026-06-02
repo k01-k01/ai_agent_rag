@@ -1,60 +1,23 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 
 /**
  * 预处理 Markdown 文本，修复 LLM 生成的不规范格式
- * 
- * LLM 经常生成不规范的 Markdown，例如：
- * - "###核心主题"（标题后无空格）
- * - "-项目"（列表标记后无空格）
- * - "---" 前后无空行
- * - "###1.报错原因"（标题标记后跟数字列表）
- * 
- * 注意：**不加**空格在 ** 与中文之间，因为 Markdown 规范允许 **中文** 这样的用法，
- * 加空格反而会破坏有效的 Markdown 语法。
- * ReactMarkdown + remarkGfm 完全支持中文加粗语法如 **核心主题**。
  */
 function preprocessMarkdown(text: string): string {
   if (!text) return text;
-
   let result = text;
-
-  // ===== 1. 修复标题标记后缺少空格的问题 =====
-  //    "###核心主题" → "### 核心主题"
-  //    也处理 "###1.报错原因" → "### 1.报错原因"（标题后跟数字列表）
-  //    注意：必须匹配完整的 # 序列（1-6个），且后面紧跟非空格、非#的字符
-  //    使用 \b 单词边界确保 # 序列是完整的（后面没有更多 #）
-  //    或者使用负向先行断言确保后面不是 #
   result = result.replace(/(^|\n)(#{1,6})(?!\s)(?!#)/gm, '$1$2 ');
-
-  // ===== 2. 修复列表标记后缺少空格的问题 =====
-  //    行首无序列表：-/*/+ 后跟非空白、非-、非*的字符（避免匹配 --- 或 **）
   result = result.replace(/^(\s*[-*+])(?![\s\-*])/gm, '$1 ');
   result = result.replace(/^(\s*\d+\.)(?=\S)/gm, '$1 ');
-  //    行内列表（不在行首）："服务未启动-配置冲突" → "服务未启动\n- 配置冲突"
-  //    匹配：中文/句号/问号等后跟 - 再跟中文（中间无空格）
   result = result.replace(/([\u4e00-\u9fff\u3002\uff1f\uff01\u3001])\s*-([\u4e00-\u9fff])/g, '$1\n- $2');
-
-  // ===== 3. 修复分隔线 --- 前后换行问题 =====
-  //    如果 --- 前后没有空行，添加空行
   result = result.replace(/([^\n])\n---\n([^\n])/g, '$1\n\n---\n\n$2');
-
-  // ===== 4. 修复引用标记后缺少空格的问题 =====
-  //    ">引用" → "> 引用"
   result = result.replace(/^>([^>\s])/gm, '> $1');
-
-  // ===== 5. 修复连续标题之间缺少换行和空格的问题 =====
-  //    "关键要点###1.报错原因" → "关键要点\n\n### 1.报错原因"
-  //    匹配：非换行、非#字符后跟完整的 # 序列（1-6个），后面跟数字
-  //    使用 [^\n#] 避免把 ## 拆成 #\n\n#
-  //    注意：步骤1已经处理了行首的 ###后跟非空格，所以这里只处理行中的情况
   result = result.replace(/([^\n#])(#{1,6})(\d)/g, '$1\n\n$2 $3');
-
   return result;
 }
-
 
 import {
   listKnowledgeBases,
@@ -62,20 +25,21 @@ import {
   listConversations,
   getConversation,
   deleteConversation,
+  getCurrentLLMConfig,
+  updateLLMConfig,
   KnowledgeBase,
   ChatMessage,
   SSEChatEvent,
   Conversation,
+  LLMConfig,
 } from '../api/index';
 
-// 扩展 ChatMessage 类型，增加 thinking、evaluation 和 observations 字段
 interface ExtendedChatMessage extends ChatMessage {
   thinking?: string;
-  evaluation?: string;  // LLM 对工具结果的评估思考
-  observations?: string;  // LLM 对工具结果的观察思考
-  toolCalls?: { tool: string; args: any }[];  // 工具调用记录
+  evaluation?: string;
+  observations?: string;
+  toolCalls?: { tool: string; args: any }[];
 }
-
 
 function Chat() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -85,33 +49,26 @@ function Chat() {
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [currentToolName, setCurrentToolName] = useState<string | null>(null);
-  // 当前 assistant 消息的 thinking 内容（流式累积中）
   const [thinkingContent, setThinkingContent] = useState<string>('');
-  // 当前 assistant 消息的 evaluation 内容（流式累积中）- 评估思考独立于初始思考
   const [evaluationContent, setEvaluationContent] = useState<string>('');
-  // 当前 assistant 消息的 observation 内容（流式累积中）
   const [observationContent, setObservationContent] = useState<string>('');
-  // Agent 工作流阶段
   const [agentPhase, setAgentPhase] = useState<'idle' | 'thinking' | 'tool_calling' | 'observing' | 'evaluating' | 'responding'>('idle');
-  // 知识库下拉菜单是否显示
   const [showKbDropdown, setShowKbDropdown] = useState(false);
-  // 下拉菜单的 ref，用于点击外部关闭
   const kbDropdownRef = useRef<HTMLDivElement>(null);
-
-  // 对话列表相关
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+  const [showLlmConfigModal, setShowLlmConfigModal] = useState(false);
+  const [configForm, setConfigForm] = useState({ api_key: '', api_base: '', model: '' });
+  const [isSavingLlmConfig, setIsSavingLlmConfig] = useState(false);
+  const [llmConfigMessage, setLlmConfigMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const currentAssistantMsgRef = useRef<ExtendedChatMessage | null>(null);
-  // 使用 ref 存储 thinking 内容，避免闭包陈旧值问题
   const thinkingContentRef = useRef<string>('');
-  // 使用 ref 存储 evaluation 内容
   const evaluationContentRef = useRef<string>('');
-  // 使用 ref 存储 observation 内容
   const observationContentRef = useRef<string>('');
-  // 使用 ref 存储 tool calls 记录
   const toolCallsRef = useRef<{ tool: string; args: any }[]>([]);
 
   // 点击外部关闭知识库下拉菜单
@@ -125,16 +82,18 @@ function Chat() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // 加载知识库列表
+  useEffect(() => {
+    getCurrentLLMConfig()
+      .then((config) => setLlmConfig(config))
+      .catch((err) => console.error('Failed to load LLM config:', err));
+  }, []);
+
   useEffect(() => {
     listKnowledgeBases()
-      .then((data) => {
-        setKnowledgeBases(data);
-      })
+      .then((data) => setKnowledgeBases(data))
       .catch((err) => console.error('Failed to load knowledge bases:', err));
   }, []);
 
-  // 加载对话列表
   const loadConversations = useCallback(() => {
     listConversations()
       .then((data) => setConversations(data.conversations))
@@ -145,7 +104,6 @@ function Chat() {
     loadConversations();
   }, [loadConversations]);
 
-  // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -156,97 +114,58 @@ function Chat() {
     scrollToBottom();
   }, [messages, thinkingContent, observationContent, scrollToBottom]);
 
-  // 处理 SSE 事件
   const handleSSEEvent = useCallback((event: SSEChatEvent) => {
     switch (event.type) {
       case 'agent':
-        // 显示 Agent 调用的工具名
         setCurrentToolName(event.content || null);
         break;
-
       case 'conversation_id':
         setConversationId(event.conversationId || event.content || null);
         break;
-
       case 'thinking':
-        // LLM 的初始思考过程（tool_call 之前）
-        // 存入 thinkingContent，与评估思考（evaluation）分开
         if (event.content) {
           setThinkingContent((prev) => prev + event.content);
           thinkingContentRef.current += event.content;
           setAgentPhase('thinking');
         }
         break;
-
       case 'evaluation':
-        // LLM 对工具结果的评估思考（observation 之后，独立于初始思考）
-        // 存入 evaluationContent，与初始思考（thinking）分开
         if (event.content) {
           setEvaluationContent((prev) => prev + event.content);
           evaluationContentRef.current += event.content;
           setAgentPhase('evaluating');
         }
         break;
-
       case 'tool_call':
-        // 记录工具调用
-        // 后端发送的 tool_call 事件中，content 是工具名，args 是参数
         if (event.content) {
-          toolCallsRef.current.push({
-            tool: event.content,
-            args: event.args || {},
-          });
+          toolCallsRef.current.push({ tool: event.content, args: event.args || {} });
         }
         setAgentPhase('tool_calling');
         break;
-
       case 'observation':
-        // Agent 观察工具执行结果（LLM 对工具结果的真实思考，逐 token 流式）
         if (event.content) {
           setObservationContent((prev) => prev + event.content);
           observationContentRef.current += event.content;
           setAgentPhase('observing');
         }
-        // observation 事件结束后，LLM 将进入评估思考阶段
-        // 立即将阶段设为 evaluating，确保阶段指示器正确显示"评估"步骤
-        // 即使 LLM 的评估思考 thinking 事件尚未到达，UI 也能提前展示 evaluating 状态
         break;
-
-
       case 'text':
         setMessages((prev) => {
           const lastMsg = prev[prev.length - 1];
           if (lastMsg && lastMsg.role === 'assistant' && lastMsg.id === currentAssistantMsgRef.current?.id) {
             const updated = [...prev];
-            updated[updated.length - 1] = {
-              ...lastMsg,
-              content: lastMsg.content + event.content,
-            };
+            updated[updated.length - 1] = { ...lastMsg, content: lastMsg.content + event.content };
             return updated;
           }
           return prev;
         });
-        // 阶段切换逻辑：
-        // - evaluating: 如果已经有 evaluation 内容，切换到 responding（评估思考结束，开始回答）
-        //               如果没有 evaluation 内容，保持 evaluating（等待第一个 evaluation 事件）
-        // - observing:  observation 刚结束，LLM 直接生成回答（无评估思考），切换到 responding
-        // - 其他: 设为 responding
         setAgentPhase((prev) => {
           if (prev === 'evaluating') {
-            // 如果已经有 evaluation 内容，说明评估思考阶段已结束，切换到 responding
-            // 如果没有 evaluation 内容，保持 evaluating（等待 evaluation 事件先到达）
-            if (evaluationContentRef.current) {
-              return 'responding';
-            }
-            return 'evaluating';
+            return evaluationContentRef.current ? 'responding' : 'evaluating';
           }
-          if (prev === 'observing') {
-            return 'responding';
-          }
-          return 'responding';
+          return prev === 'observing' ? 'responding' : 'responding';
         });
         break;
-
       case 'sources':
         if (event.content) {
           try {
@@ -255,22 +174,15 @@ function Chat() {
               const lastMsg = prev[prev.length - 1];
               if (lastMsg && lastMsg.role === 'assistant') {
                 const updated = [...prev];
-                updated[updated.length - 1] = {
-                  ...lastMsg,
-                  sources: Array.isArray(sources) ? sources : lastMsg.sources,
-                };
+                updated[updated.length - 1] = { ...lastMsg, sources: Array.isArray(sources) ? sources : lastMsg.sources };
                 return updated;
               }
               return prev;
             });
-          } catch {
-            // ignore parse error
-          }
+          } catch {}
         }
         break;
-
       case 'done': {
-        // 将 thinking、evaluation、observations、toolCalls 保存到当前 assistant 消息中
         const finalThinking = thinkingContentRef.current;
         const finalEvaluation = evaluationContentRef.current;
         const finalObservations = observationContentRef.current;
@@ -302,33 +214,10 @@ function Chat() {
         observationContentRef.current = '';
         toolCallsRef.current = [];
         currentAssistantMsgRef.current = null;
-        // 刷新对话列表
         loadConversations();
         break;
       }
-
       case 'error': {
-        const errorThinking = thinkingContentRef.current;
-        const errorEvaluation = evaluationContentRef.current;
-        const errorObservations = observationContentRef.current;
-        const errorToolCalls = toolCallsRef.current;
-        const errorAssistantId = currentAssistantMsgRef.current?.id;
-        setMessages((prev) => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant' && lastMsg.id === errorAssistantId) {
-            const updated = [...prev];
-            updated[updated.length - 1] = {
-              ...lastMsg,
-              thinking: errorThinking || undefined,
-              evaluation: errorEvaluation || undefined,
-              observations: errorObservations || undefined,
-              toolCalls: errorToolCalls.length > 0 ? errorToolCalls : undefined,
-            };
-            return updated;
-          }
-          return prev;
-        });
-
         setIsLoading(false);
         setCurrentToolName(null);
         setThinkingContent('');
@@ -341,12 +230,7 @@ function Chat() {
         toolCallsRef.current = [];
         setMessages((prev) => [
           ...prev,
-          {
-            id: `error-${Date.now()}`,
-            role: 'assistant',
-            content: event.content || '发生未知错误',
-            timestamp: Date.now(),
-          },
+          { id: `error-${Date.now()}`, role: 'assistant', content: event.content || '发生未知错误', timestamp: Date.now() },
         ]);
         currentAssistantMsgRef.current = null;
         break;
@@ -354,45 +238,20 @@ function Chat() {
     }
   }, [loadConversations]);
 
-
-  // 发送消息
   const handleSend = useCallback(() => {
     const trimmed = inputValue.trim();
     if (!trimmed || isLoading) return;
-
-    // 如果没有选择知识库，提示用户
     if (!selectedKbId) {
-      const userMsg: ExtendedChatMessage = {
-        id: `user-${Date.now()}`,
-        role: 'user',
-        content: trimmed,
-        timestamp: Date.now(),
-      };
-      const hintMsg: ExtendedChatMessage = {
-        id: `hint-${Date.now()}`,
-        role: 'assistant',
-        content: '⚠️ 请先选择知识库',
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, userMsg, hintMsg]);
+      setMessages((prev) => [
+        ...prev,
+        { id: `user-${Date.now()}`, role: 'user', content: trimmed, timestamp: Date.now() },
+        { id: `hint-${Date.now()}`, role: 'assistant', content: '⚠️ 请先选择知识库', timestamp: Date.now() },
+      ]);
       setInputValue('');
       return;
     }
-
-    const userMsg: ExtendedChatMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: trimmed,
-      timestamp: Date.now(),
-    };
-
-    const assistantMsg: ExtendedChatMessage = {
-      id: `assistant-${Date.now()}`,
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-    };
-
+    const userMsg: ExtendedChatMessage = { id: `user-${Date.now()}`, role: 'user', content: trimmed, timestamp: Date.now() };
+    const assistantMsg: ExtendedChatMessage = { id: `assistant-${Date.now()}`, role: 'assistant', content: '', timestamp: Date.now() };
     currentAssistantMsgRef.current = assistantMsg;
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInputValue('');
@@ -406,16 +265,9 @@ function Chat() {
     evaluationContentRef.current = '';
     observationContentRef.current = '';
     toolCallsRef.current = [];
-
-    abortControllerRef.current = sendChatMessage(
-      trimmed,
-      handleSSEEvent,
-      selectedKbId,
-      conversationId || undefined
-    );
+    abortControllerRef.current = sendChatMessage(trimmed, handleSSEEvent, selectedKbId, conversationId || undefined);
   }, [inputValue, isLoading, selectedKbId, conversationId, handleSSEEvent]);
 
-  // 取消请求
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -433,7 +285,6 @@ function Chat() {
     currentAssistantMsgRef.current = null;
   }, []);
 
-  // 新对话
   const handleNewChat = useCallback(() => {
     handleStop();
     setMessages([]);
@@ -446,15 +297,12 @@ function Chat() {
     loadConversations();
   }, [handleStop, loadConversations]);
 
-  // 选择历史对话
   const handleSelectConversation = useCallback(async (convId: string) => {
     if (isLoading) return;
     handleStop();
-
     try {
       const convData = await getConversation(convId);
       if (convData) {
-        // 将数据库中的消息转换为 ChatMessage 格式
         const loadedMessages: ExtendedChatMessage[] = convData.messages.map((msg: any) => ({
           id: msg.id || `msg-${Date.now()}-${Math.random()}`,
           role: msg.role as 'user' | 'assistant',
@@ -471,12 +319,10 @@ function Chat() {
     }
   }, [isLoading, handleStop]);
 
-  // 删除对话
   const handleDeleteConversation = useCallback(async (e: React.MouseEvent, convId: string) => {
     e.stopPropagation();
     try {
       await deleteConversation(convId);
-      // 如果删除的是当前对话，清空消息
       if (convId === conversationId) {
         setMessages([]);
         setConversationId(null);
@@ -487,111 +333,99 @@ function Chat() {
     }
   }, [conversationId, loadConversations]);
 
-  // 键盘事件
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend]
-  );
+  // 打开 DeepSeek 配置弹窗
+  const handleOpenLlmConfig = useCallback(async () => {
+    setLlmConfigMessage(null);
+    try {
+      const config = await getCurrentLLMConfig();
+      setConfigForm({
+        api_key: '',
+        api_base: config.model ? '' : '',
+        model: config.model,
+      });
+      setShowLlmConfigModal(true);
+    } catch (err) {
+      console.error('Failed to load LLM config:', err);
+      setLlmConfigMessage({ type: 'error', text: '加载配置失败，请检查后端服务是否正常运行。' });
+    }
+  }, []);
 
-  // 格式化时间
+  // 保存 DeepSeek 配置
+  const handleSaveLlmConfig = useCallback(async () => {
+    setIsSavingLlmConfig(true);
+    setLlmConfigMessage(null);
+    try {
+      await updateLLMConfig({
+        api_key: configForm.api_key || undefined,
+        api_base: configForm.api_base || undefined,
+        model: configForm.model || undefined,
+      });
+      setLlmConfigMessage({ type: 'success', text: 'DeepSeek 配置保存成功！' });
+      const config = await getCurrentLLMConfig();
+      setLlmConfig(config);
+    } catch (err) {
+      console.error('Failed to save LLM config:', err);
+      setLlmConfigMessage({ type: 'error', text: '保存配置失败，请重试。' });
+    } finally {
+      setIsSavingLlmConfig(false);
+    }
+  }, [configForm]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
+
   const formatTime = (dateStr: string) => {
     const date = new Date(dateStr);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) {
-      return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    } else if (diffDays === 1) {
-      return '昨天';
-    } else if (diffDays < 7) {
-      return `${diffDays}天前`;
-    } else {
-      return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
-    }
+    if (diffDays === 0) return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return '昨天';
+    if (diffDays < 7) return `${diffDays}天前`;
+    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
   };
 
-  // 判断消息是否是当前正在接收的 assistant 消息
   const isCurrentAssistant = (msg: ExtendedChatMessage) => {
     return msg.role === 'assistant' && msg.id === currentAssistantMsgRef.current?.id;
   };
 
-  // 获取消息的 thinking 内容（流式中的或已完成的）
   const getThinkingContent = (msg: ExtendedChatMessage): string | null => {
-    if (isCurrentAssistant(msg)) {
-      return thinkingContent || null;
-    }
+    if (isCurrentAssistant(msg)) return thinkingContent || null;
     return msg.thinking || null;
   };
 
-  // 获取消息的 evaluation 内容（评估思考，独立于初始思考）
   const getEvaluationContent = (msg: ExtendedChatMessage): string | null => {
-    if (isCurrentAssistant(msg)) {
-      return evaluationContent || null;
-    }
+    if (isCurrentAssistant(msg)) return evaluationContent || null;
     return msg.evaluation || null;
   };
 
-  // 获取消息的 observation 内容
   const getObservationContent = (msg: ExtendedChatMessage): string | null => {
-    if (isCurrentAssistant(msg)) {
-      return observationContent || null;
-    }
+    if (isCurrentAssistant(msg)) return observationContent || null;
     return msg.observations || null;
   };
 
-
-  // 获取消息的 tool calls
   const getToolCalls = (msg: ExtendedChatMessage): { tool: string; args: any }[] | null => {
-    if (isCurrentAssistant(msg)) {
-      return toolCallsRef.current.length > 0 ? toolCallsRef.current : null;
-    }
+    if (isCurrentAssistant(msg)) return toolCallsRef.current.length > 0 ? toolCallsRef.current : null;
     return msg.toolCalls || null;
-  };
-
-  // Agent 阶段对应的图标和文字
-  const getAgentPhaseInfo = (phase: string) => {
-    switch (phase) {
-      case 'thinking': return { icon: '🧠', text: '思考中...', color: 'text-purple-600 bg-purple-50 border-purple-200' };
-      case 'tool_calling': return { icon: '🔧', text: '调用工具', color: 'text-orange-600 bg-orange-50 border-orange-200' };
-      case 'observing': return { icon: '👀', text: '观察结果', color: 'text-blue-600 bg-blue-50 border-blue-200' };
-      case 'evaluating': return { icon: '🧠', text: '评估中...', color: 'text-indigo-600 bg-indigo-50 border-indigo-200' };
-      case 'responding': return { icon: '💬', text: '生成回答', color: 'text-green-600 bg-green-50 border-green-200' };
-      default: return { icon: '', text: '', color: '' };
-    }
   };
 
   return (
     <div className="flex h-[calc(100vh-3rem)] gap-0">
       {/* 左侧对话列表侧边栏 */}
-      <div
-        className={`${
-          showSidebar ? 'w-72' : 'w-0'
-        } flex-shrink-0 transition-all duration-300 overflow-hidden border-r bg-white rounded-l-lg`}
-      >
+      <div className={`${showSidebar ? 'w-72' : 'w-0'} flex-shrink-0 transition-all duration-300 overflow-hidden border-r bg-white rounded-l-lg`}>
         <div className="flex flex-col h-full">
-          {/* 侧边栏头部 */}
           <div className="p-3 border-b">
-            <button
-              onClick={handleNewChat}
-              disabled={isLoading}
-              className="w-full py-2 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium disabled:opacity-50"
-            >
+            <button onClick={handleNewChat} disabled={isLoading} className="w-full py-2 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium disabled:opacity-50">
               + 新对话
             </button>
           </div>
-
-          {/* 对话列表 */}
           <div className="flex-1 overflow-y-auto">
             {conversations.length === 0 ? (
-              <div className="p-4 text-center text-gray-400 text-sm">
-                暂无历史对话
-              </div>
+              <div className="p-4 text-center text-gray-400 text-sm">暂无历史对话</div>
             ) : (
               <div className="py-1">
                 {conversations.map((conv) => (
@@ -599,18 +433,12 @@ function Chat() {
                     key={conv.id}
                     onClick={() => handleSelectConversation(conv.id)}
                     className={`group flex items-center px-3 py-2.5 cursor-pointer transition-colors ${
-                      conv.id === conversationId
-                        ? 'bg-blue-50 border-l-2 border-blue-600'
-                        : 'hover:bg-gray-50 border-l-2 border-transparent'
+                      conv.id === conversationId ? 'bg-blue-50 border-l-2 border-blue-600' : 'hover:bg-gray-50 border-l-2 border-transparent'
                     }`}
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-800 truncate">
-                        {conv.title}
-                      </div>
-                      <div className="text-xs text-gray-400 mt-0.5">
-                        {conv.message_count} 条消息 · {formatTime(conv.updated_at)}
-                      </div>
+                      <div className="text-sm font-medium text-gray-800 truncate">{conv.title}</div>
+                      <div className="text-xs text-gray-400 mt-0.5">{conv.message_count} 条消息 · {formatTime(conv.updated_at)}</div>
                     </div>
                     <button
                       onClick={(e) => handleDeleteConversation(e, conv.id)}
@@ -631,15 +459,9 @@ function Chat() {
 
       {/* 右侧聊天区域 */}
       <div className="flex-1 flex flex-col">
-        {/* 顶部工具栏 */}
         <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div className="flex items-center gap-3">
-            {/* 侧边栏切换按钮 */}
-            <button
-              onClick={() => setShowSidebar(!showSidebar)}
-              className="p-1.5 rounded-lg hover:bg-gray-100 transition text-gray-500"
-              title={showSidebar ? '隐藏对话列表' : '显示对话列表'}
-            >
+            <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg hover:bg-gray-100 transition text-gray-500" title={showSidebar ? '隐藏对话列表' : '显示对话列表'}>
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 {showSidebar ? (
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
@@ -650,13 +472,31 @@ function Chat() {
             </button>
             <h1 className="text-2xl font-bold">聊天</h1>
             {currentToolName && (
-              <span
-                className="inline-flex items-center text-xs px-2 py-0.5 rounded-full font-medium animate-pulse bg-orange-100 text-orange-800"
-              >
+              <span className="inline-flex items-center text-xs px-2 py-0.5 rounded-full font-medium animate-pulse bg-orange-100 text-orange-800">
                 {currentToolName}
               </span>
             )}
           </div>
+
+          {/* DeepSeek 模型标识 + 配置按钮 */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 px-3 py-2 border-2 border-emerald-400 bg-emerald-50 text-emerald-700 rounded-lg text-sm font-medium">
+              <span>🤖</span>
+              <span>{llmConfig ? `LLM (${llmConfig.model})` : '加载中...'}</span>
+            </div>
+            <button
+              onClick={handleOpenLlmConfig}
+              className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              title="配置 DeepSeek API"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          </div>
+
+          {/* 知识库选择按钮 */}
           <div className="relative" ref={kbDropdownRef}>
             <button
               onClick={() => setShowKbDropdown(!showKbDropdown)}
@@ -665,35 +505,20 @@ function Chat() {
             >
               <span>📚</span>
               <span>{selectedKbId ? knowledgeBases.find(kb => kb.id === selectedKbId)?.name || '请选择知识库' : '请选择知识库'}</span>
-              <svg
-                className={`w-4 h-4 text-blue-500 transition-transform duration-200 ${showKbDropdown ? 'rotate-180' : ''}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
+              <svg className={`w-4 h-4 text-blue-500 transition-transform duration-200 ${showKbDropdown ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
-
             {showKbDropdown && (
               <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
                 {knowledgeBases.length === 0 ? (
-                  <div className="px-3 py-3 text-sm text-gray-400 text-center">
-                    暂无知识库
-                  </div>
+                  <div className="px-3 py-3 text-sm text-gray-400 text-center">暂无知识库</div>
                 ) : (
                   knowledgeBases.map((kb) => (
                     <div
                       key={kb.id}
-                      onClick={() => {
-                        setSelectedKbId(kb.id);
-                        setShowKbDropdown(false);
-                      }}
-                      className={`flex items-center justify-between px-3 py-2.5 cursor-pointer text-sm transition-colors ${
-                        kb.id === selectedKbId
-                          ? 'bg-blue-50 text-blue-700 font-medium'
-                          : 'text-gray-700 hover:bg-gray-50'
-                      }`}
+                      onClick={() => { setSelectedKbId(kb.id); setShowKbDropdown(false); }}
+                      className={`flex items-center justify-between px-3 py-2.5 cursor-pointer text-sm transition-colors ${kb.id === selectedKbId ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700 hover:bg-gray-50'}`}
                     >
                       <span>{kb.name}</span>
                       {kb.id === selectedKbId && (
@@ -724,140 +549,84 @@ function Chat() {
                 const displayObservations = getObservationContent(msg);
                 const displayToolCalls = getToolCalls(msg);
                 return (
-                  <div
-                    key={msg.id}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div
-                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                        msg.role === 'user'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-100 text-gray-900'
-                      }`}
-                    >
-                      {/* ===== Agent 工作流指示器（仅 assistant 消息且正在接收时显示） ===== */}
+                  <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[80%] rounded-lg px-4 py-2 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-900'}`}>
                       {msg.role === 'assistant' && isCurrentAssistant(msg) && agentPhase !== 'idle' && (
                         <div className="mb-3">
                           <div className="flex items-center gap-2 text-xs">
-                            {/* 阶段 1: 思考 */}
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${
-                              agentPhase === 'thinking' ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium' : 'text-gray-400'
-                            }`}>
-                              <span>🧠</span>
-                              <span>思考</span>
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${agentPhase === 'thinking' ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium' : 'text-gray-400'}`}>
+                              <span>🧠</span><span>思考</span>
                             </div>
-                            {/* 连接线 */}
                             <div className={`w-4 h-px ${agentPhase === 'tool_calling' || agentPhase === 'observing' || agentPhase === 'evaluating' || agentPhase === 'responding' ? 'bg-purple-300' : 'bg-gray-200'}`}></div>
-                            {/* 阶段 2: 调用工具 */}
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${
-                              agentPhase === 'tool_calling' ? 'bg-orange-50 border-orange-200 text-orange-700 font-medium' : 'text-gray-400'
-                            }`}>
-                              <span>🔧</span>
-                              <span>工具</span>
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${agentPhase === 'tool_calling' ? 'bg-orange-50 border-orange-200 text-orange-700 font-medium' : 'text-gray-400'}`}>
+                              <span>🔧</span><span>工具</span>
                             </div>
-                            {/* 连接线 */}
                             <div className={`w-4 h-px ${agentPhase === 'observing' || agentPhase === 'evaluating' || agentPhase === 'responding' ? 'bg-orange-300' : 'bg-gray-200'}`}></div>
-                            {/* 阶段 3: 观察 */}
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${
-                              agentPhase === 'observing' ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'text-gray-400'
-                            }`}>
-                              <span>👀</span>
-                              <span>观察</span>
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${agentPhase === 'observing' ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'text-gray-400'}`}>
+                              <span>👀</span><span>观察</span>
                             </div>
-                            {/* 连接线 */}
                             <div className={`w-4 h-px ${agentPhase === 'evaluating' || agentPhase === 'responding' ? 'bg-blue-300' : 'bg-gray-200'}`}></div>
-                            {/* 阶段 4: 评估 */}
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${
-                              agentPhase === 'evaluating' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-medium' : 'text-gray-400'
-                            }`}>
-                              <span>🧠</span>
-                              <span>评估</span>
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${agentPhase === 'evaluating' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-medium' : 'text-gray-400'}`}>
+                              <span>🧠</span><span>评估</span>
                             </div>
-                            {/* 连接线 */}
                             <div className={`w-4 h-px ${agentPhase === 'responding' ? 'bg-indigo-300' : 'bg-gray-200'}`}></div>
-                            {/* 阶段 5: 回答 */}
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${
-                              agentPhase === 'responding' ? 'bg-green-50 border-green-200 text-green-700 font-medium' : 'text-gray-400'
-                            }`}>
-                              <span>💬</span>
-                              <span>回答</span>
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded-full border ${agentPhase === 'responding' ? 'bg-green-50 border-green-200 text-green-700 font-medium' : 'text-gray-400'}`}>
+                              <span>💬</span><span>回答</span>
                             </div>
                           </div>
                         </div>
                       )}
 
-                      {/* ===== 思考过程（折叠面板） ===== */}
                       {displayThinking && (
                         <details className="mb-2" open={isCurrentAssistant(msg)}>
                           <summary className="text-xs text-purple-600 font-medium cursor-pointer hover:text-purple-800 select-none">
                             🧠 思考过程 {isCurrentAssistant(msg) && <span className="animate-pulse text-purple-400">▌</span>}
                           </summary>
                           <div className="mt-1 text-xs text-gray-500 bg-purple-50 rounded p-2 prose prose-sm max-w-none max-h-40 overflow-y-auto">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {preprocessMarkdown(displayThinking)}
-                            </ReactMarkdown>
-
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{preprocessMarkdown(displayThinking)}</ReactMarkdown>
                           </div>
                         </details>
                       )}
 
-                      {/* ===== 工具调用记录 ===== */}
                       {displayToolCalls && displayToolCalls.length > 0 && (
                         <div className="mb-2">
                           <div className="text-xs text-orange-600 font-medium mb-1">🔧 工具调用</div>
                           {displayToolCalls.map((tc, idx) => (
                             <div key={idx} className="text-xs text-orange-700 bg-orange-50 rounded p-1.5 mb-1 font-mono">
                               <span className="font-medium">{tc.tool}</span>
-                              {tc.args && Object.keys(tc.args).length > 0 && (
-                                <span className="text-orange-500">
-                                  {' '}({JSON.stringify(tc.args).slice(0, 100)})
-                                </span>
-                              )}
+                              {tc.args && Object.keys(tc.args).length > 0 && <span className="text-orange-500"> ({JSON.stringify(tc.args).slice(0, 100)})</span>}
                             </div>
                           ))}
                         </div>
                       )}
 
-                      {/* ===== 观察结果（折叠面板） ===== */}
                       {displayObservations && (
                         <details className="mb-2" open={isCurrentAssistant(msg)}>
                           <summary className="text-xs text-blue-600 font-medium cursor-pointer hover:text-blue-800 select-none">
                             👀 观察结果 {isCurrentAssistant(msg) && <span className="animate-pulse text-blue-400">▌</span>}
                           </summary>
                           <div className="mt-1 text-xs text-gray-600 bg-blue-50 rounded p-2 prose prose-sm max-w-none max-h-32 overflow-y-auto">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {preprocessMarkdown(displayObservations)}
-                            </ReactMarkdown>
-
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{preprocessMarkdown(displayObservations)}</ReactMarkdown>
                           </div>
                         </details>
                       )}
 
-                      {/* ===== 评估思考（折叠面板）- 独立于初始思考过程 ===== */}
                       {displayEvaluation && (
                         <details className="mb-2" open={isCurrentAssistant(msg)}>
                           <summary className="text-xs text-indigo-600 font-medium cursor-pointer hover:text-indigo-800 select-none">
                             🧠 评估思考 {isCurrentAssistant(msg) && <span className="animate-pulse text-indigo-400">▌</span>}
                           </summary>
                           <div className="mt-1 text-xs text-gray-600 bg-indigo-50 rounded p-2 prose prose-sm max-w-none max-h-40 overflow-y-auto">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {preprocessMarkdown(displayEvaluation)}
-                            </ReactMarkdown>
-
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{preprocessMarkdown(displayEvaluation)}</ReactMarkdown>
                           </div>
                         </details>
                       )}
 
-                      {/* ===== 消息内容 - 正式回答（支持 Markdown 渲染） ===== */}
                       <div className="prose prose-sm max-w-none break-words">
                         {msg.content ? (
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            rehypePlugins={[rehypeHighlight]}
-                          >
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                             {preprocessMarkdown(msg.content)}
                           </ReactMarkdown>
-
                         ) : msg.role === 'assistant' && !isCurrentAssistant(msg) ? (
                           <span className="text-gray-400 italic">（空）</span>
                         ) : msg.role === 'assistant' && isCurrentAssistant(msg) ? (
@@ -865,27 +634,19 @@ function Chat() {
                         ) : ''}
                       </div>
 
-                      {/* 检索来源展示区域 */}
                       {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-gray-200">
                           <p className="text-xs text-gray-500 font-medium mb-1">📚 检索来源：</p>
                           {msg.sources.map((source, idx) => (
                             <div key={idx} className="text-xs text-gray-500 mb-0.5">
                               <span className="font-medium">{source.title}</span>
-                              {source.content && (
-                                <span className="text-gray-400"> - {source.content.slice(0, 50)}...</span>
-                              )}
+                              {source.content && <span className="text-gray-400"> - {source.content.slice(0, 50)}...</span>}
                             </div>
                           ))}
                         </div>
                       )}
 
-                      {/* 时间戳 */}
-                      <div
-                        className={`text-xs mt-1 ${
-                          msg.role === 'user' ? 'text-blue-200' : 'text-gray-400'
-                        }`}
-                      >
+                      <div className={`text-xs mt-1 ${msg.role === 'user' ? 'text-blue-200' : 'text-gray-400'}`}>
                         {new Date(msg.timestamp).toLocaleTimeString('zh-CN')}
                       </div>
                     </div>
@@ -915,10 +676,11 @@ function Chat() {
               {isLoading ? (
                 <button
                   onClick={handleStop}
-                  className="px-4 h-16 bg-red-600 text-white rounded-lg hover:bg-red-700 transition flex items-center gap-1"
+                  className="px-4 py-2.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition text-sm font-medium flex items-center gap-1.5"
                 >
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <rect x="4" y="4" width="12" height="12" rx="1" />
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
                   </svg>
                   停止
                 </button>
@@ -926,15 +688,10 @@ function Chat() {
                 <button
                   onClick={handleSend}
                   disabled={!inputValue.trim()}
-                  className="px-4 h-16 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center gap-1"
+                  className="px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                    />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
                   </svg>
                   发送
                 </button>
@@ -942,6 +699,90 @@ function Chat() {
             </div>
           </div>
         </div>
+
+        {/* DeepSeek 配置弹窗 */}
+        {showLlmConfigModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-900">DeepSeek API 配置</h2>
+                <button
+                  onClick={() => setShowLlmConfigModal(false)}
+                  className="p-1 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {llmConfigMessage && (
+                <div className={`mb-4 p-3 rounded-lg text-sm ${
+                  llmConfigMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+                }`}>
+                  {llmConfigMessage.text}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                  <input
+                    type="password"
+                    value={configForm.api_key}
+                    onChange={(e) => setConfigForm({ ...configForm, api_key: e.target.value })}
+                    placeholder="输入新的 API Key（留空则保持当前值）"
+                    className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">API Base URL</label>
+                  <input
+                    type="text"
+                    value={configForm.api_base}
+                    onChange={(e) => setConfigForm({ ...configForm, api_base: e.target.value })}
+                    placeholder="输入新的 API Base URL（留空则保持当前值）"
+                    className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">模型名称</label>
+                  <input
+                    type="text"
+                    value={configForm.model}
+                    onChange={(e) => setConfigForm({ ...configForm, model: e.target.value })}
+                    placeholder="输入新的模型名称（留空则保持当前值）"
+                    className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setShowLlmConfigModal(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleSaveLlmConfig}
+                  disabled={isSavingLlmConfig}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isSavingLlmConfig ? (
+                    <>
+                      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      保存中...
+                    </>
+                  ) : '保存配置'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

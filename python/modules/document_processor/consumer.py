@@ -19,7 +19,7 @@ from db_pool import get_db_pool
 from modules.document_processor.parser import parse_text
 from modules.document_processor.chunker import chunk_document
 from modules.document_processor.embedder import generate_embeddings_batch
-from modules.document_processor.summarizer import generate_document_summary
+from modules.document_processor.summarizer_v6 import generate_document_guide
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +74,7 @@ async def process_document_task(task: dict) -> dict:
         if not content or not content.strip():
             raise ValueError("Document content is empty after parsing")
 
-        # 2.5 生成文档摘要（使用 DeepSeek API）
-        # 摘要生成失败不影响主流程，summary 为 None 时跳过
-        summary = None
-        try:
-            summary = await generate_document_summary(content, file_name)
-        except Exception as e:
-            logger.warning(f"Summary generation failed for document {doc_id}: {e}")
-
-        # 3. 语义切分
+        # 3. 语义切分（先生成 chunks，后续生成提问导读需要用到）
         metadata = {
             "document_id": doc_id,
             "knowledge_base_id": kb_id,
@@ -118,7 +110,20 @@ async def process_document_task(task: dict) -> dict:
                 chunk_records,
             )
 
-            # 6. 更新文档状态为 completed，同时存入摘要（如果有）
+            # 6. 生成文档目录（纯算法，不调用 LLM）
+            summary = None
+            try:
+                summary = await generate_document_guide(
+                    content=content,
+                    file_name=file_name,
+                    file_type=file_type,
+                    file_path=file_path,
+                )
+                logger.info(f"Generated TOC for document {doc_id}: {len(summary)} chars")
+            except Exception as e:
+                logger.warning(f"TOC generation failed for document {doc_id}: {e}")
+
+            # 7. 更新文档状态为 completed，同时存入提问导读（如果有）
             if summary:
                 await conn.execute(
                     "UPDATE documents SET status = 'completed', summary = $1 WHERE id = $2",

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Query, HTTPException
+from config import get_current_llm_config, update_llm_config
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
@@ -495,6 +496,55 @@ async def update_conversation_title(conversation_id: str, request: dict):
     if not success:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"success": True, "message": "Title updated"}
+
+
+# ==================== LLM 配置 API ====================
+
+
+@app.get("/api/llm/config")
+async def get_llm_config():
+    """
+    获取当前 LLM 配置信息（provider 名称和模型名）。
+    """
+    config = get_current_llm_config()
+    return {
+        "provider": config["provider"],
+        "model": config["model"],
+    }
+
+
+@app.put("/api/llm/config")
+async def update_llm_config_api(request: dict):
+    """
+    更新 DeepSeek LLM 配置。
+    请求体: {
+        "api_key": "可选的新 API Key",
+        "api_base": "可选的新 API Base URL",
+        "model": "可选的新 Model 名称"
+    }
+    """
+    api_key = request.get("api_key")
+    api_base = request.get("api_base")
+    model = request.get("model")
+    
+    # 至少需要提供一个要更新的字段
+    if api_key is None and api_base is None and model is None:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of 'api_key', 'api_base', or 'model' must be provided."
+        )
+    
+    try:
+        config = update_llm_config(api_key, api_base, model)
+        logger.info(f"LLM config updated: model={config['model']}, api_base={config['api_base']}")
+        return {
+            "success": True,
+            "provider": config["provider"],
+            "model": config["model"],
+            "message": "DeepSeek 配置已更新"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 if __name__ == "__main__":

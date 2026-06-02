@@ -20,7 +20,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
-from config import DEEPSEEK_API_KEY, DEEPSEEK_API_BASE, DEEPSEEK_MODEL
+from config import get_current_llm_config
 from modules.agents.state import AgentState
 from modules.agents.tools.retrieval_tool import (
     retrieve_knowledge,
@@ -117,17 +117,18 @@ class LangGraphAgent:
     """基于 LangGraph 的 ReAct Agent"""
 
     def __init__(self):
-        if not DEEPSEEK_API_KEY:
+        llm_config = get_current_llm_config()
+        if not llm_config["api_key"]:
             raise ValueError(
-                "DEEPSEEK_API_KEY is not set. "
+                f"API key for {llm_config['provider']} is not set. "
                 "Please configure it in .env file."
             )
 
-        # 初始化 LLM（DeepSeek 支持 tool calling）
+        # 初始化 LLM（兼容 OpenAI API 格式的模型都支持 tool calling）
         self.llm = ChatOpenAI(
-            model=DEEPSEEK_MODEL,
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_API_BASE,
+            model=llm_config["model"],
+            api_key=llm_config["api_key"],
+            base_url=llm_config["api_base"],
             temperature=0.7,
             max_tokens=4096,
             # 启用流式输出
@@ -151,7 +152,8 @@ class LangGraphAgent:
         )
 
         logger.info(
-            f"LangGraphAgent initialized with model: {DEEPSEEK_MODEL}, "
+            f"LangGraphAgent initialized with provider: {llm_config['provider']}, "
+            f"model: {llm_config['model']}, "
             f"tools: {[t.name for t in self.tools]}"
         )
 
@@ -471,11 +473,16 @@ class LangGraphAgent:
 
 
             # 发送剩余的 thinking 内容（如果有）
-            if current_thinking.strip() and phase != "evaluating":
-                yield {
-                    "type": "thinking",
-                    "content": current_thinking.strip(),
-                }
+            if current_thinking.strip():
+                if phase == "thinking":
+                    # LLM 没有调用工具，直接回答，将内容作为 text 发送
+                    full_response += current_thinking.strip()
+                    yield {"type": "text", "content": current_thinking.strip()}
+                elif phase != "evaluating":
+                    yield {
+                        "type": "thinking",
+                        "content": current_thinking.strip(),
+                    }
 
             # 发送完成事件
             yield {"type": "done", "content": full_response}

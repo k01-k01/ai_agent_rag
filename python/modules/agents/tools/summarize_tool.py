@@ -18,7 +18,7 @@ from typing import Optional
 from langchain_core.tools import tool
 from openai import AsyncOpenAI
 
-from config import DEEPSEEK_API_KEY, DEEPSEEK_API_BASE, DEEPSEEK_MODEL
+from config import get_current_llm_config
 from db_pool import get_db_pool
 from modules.agents.tools.retrieval_tool import get_current_knowledge_base_id
 
@@ -29,19 +29,28 @@ CHUNKS_PER_GROUP = 5       # 每组最多 5 个 chunk
 MAX_DIRECT_SUMMARY = 5     # chunk ≤5 时直接总结，不分层
 MAX_DEPTH = 3              # 最大分层深度，防止无限递归
 
-# DeepSeek 客户端（单例）
+# LLM 客户端（单例）
 _client = None
 
 
 def _get_client() -> AsyncOpenAI:
-    """获取或创建 DeepSeek 客户端（单例模式）"""
+    """
+    获取或创建 LLM 客户端（单例模式）。
+    """
     global _client
+    llm_config = get_current_llm_config()
     if _client is None:
         _client = AsyncOpenAI(
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_API_BASE,
+            api_key=llm_config["api_key"],
+            base_url=llm_config["api_base"],
         )
+        logger.info(f"Summarize client initialized with provider: {llm_config['provider']}")
     return _client
+
+
+def _get_current_model() -> str:
+    """获取当前 LLM 模型名"""
+    return get_current_llm_config()["model"]
 
 
 # ========== 提示词 ==========
@@ -215,8 +224,9 @@ async def _summarize_group(
 
     try:
         client = _get_client()
+        model = _get_current_model()
         response = await client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
                 {
@@ -266,8 +276,9 @@ async def _merge_summaries(
 
     try:
         client = _get_client()
+        model = _get_current_model()
         response = await client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
                 {
@@ -311,8 +322,9 @@ async def _generate_final_summary(
     """
     try:
         client = _get_client()
+        model = _get_current_model()
         response = await client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
                 {
