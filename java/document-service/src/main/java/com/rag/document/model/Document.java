@@ -33,8 +33,12 @@ public class Document {
     @Column(columnDefinition = "TEXT")
     private String summary;
 
+    @Column(name = "toc_status", length = 50)
+    private String tocStatus;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
 
     @PrePersist
     protected void onCreate() {
@@ -42,7 +46,11 @@ public class Document {
         if (this.status == null) {
             this.status = "uploaded";
         }
+        if (this.tocStatus == null) {
+            this.tocStatus = "pending";
+        }
     }
+
 
     public Document() {}
 
@@ -80,6 +88,10 @@ public class Document {
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
 
+    public String getTocStatus() { return tocStatus; }
+    public void setTocStatus(String tocStatus) { this.tocStatus = tocStatus; }
+
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
 }

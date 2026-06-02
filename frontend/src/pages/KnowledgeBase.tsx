@@ -26,10 +26,12 @@ function KnowledgeBase() {
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 防抖刷新文档列表
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 摘要弹窗相关状态
   const [summaryDoc, setSummaryDoc] = useState<DocumentItem | null>(null);
@@ -57,10 +59,15 @@ function KnowledgeBase() {
     }
   }, []);
 
-  // 检查是否所有文档都已处理完成
+  // 检查是否所有文档都已处理完成（包括入库和目录生成两个维度）
   const isAllDocsProcessed = useCallback((docs: DocumentItem[]) => {
-    return docs.every(doc => doc.status === 'completed' || doc.status === 'error');
+    return docs.every(doc => {
+      const statusDone = doc.status === 'completed' || doc.status === 'error';
+      const tocDone = doc.tocStatus === 'completed' || doc.tocStatus === 'error' || !doc.tocStatus;
+      return statusDone && tocDone;
+    });
   }, []);
+
 
   // 加载文档列表
   const loadDocuments = async (kbId: string) => {
@@ -82,7 +89,17 @@ function KnowledgeBase() {
     }
   };
 
-  // 启动轮询，每 3 秒刷新文档状态
+  // 防抖刷新文档列表（上传完成后延迟刷新，合并多次上传的刷新请求）
+  const debouncedLoadDocuments = useCallback((kbId: string) => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      loadDocuments(kbId);
+    }, 500);
+  }, []);
+
+  // 启动轮询，每 1 秒刷新文档状态
   const startPolling = useCallback((kbId: string) => {
     stopPolling();
     pollingRef.current = setInterval(async () => {
@@ -96,13 +113,16 @@ function KnowledgeBase() {
       } catch (err) {
         console.error('Polling failed:', err);
       }
-    }, 3000);
+    }, 1000);
   }, [stopPolling, isAllDocsProcessed]);
 
-  // 组件卸载时清理轮询
+  // 组件卸载时清理轮询和防抖定时器
   useEffect(() => {
     return () => {
       stopPolling();
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+      }
     };
   }, [stopPolling]);
 
@@ -169,21 +189,50 @@ function KnowledgeBase() {
     }
   };
 
-  // 文档上传
-  const handleUpload = async (kbId: string, file: File) => {
-    setUploading(true);
+  // ==================== 多文件并发上传 ====================
+
+  /**
+   * 上传单个文件（不阻塞其他文件上传）
+   * 上传完成后通过防抖刷新文档列表
+   */
+  const uploadSingleFile = async (kbId: string, file: File) => {
+    const fileName = file.name;
+    // 标记该文件正在上传
+    setUploadingFiles(prev => new Set(prev).add(fileName));
     try {
       await uploadDocument(kbId, file);
-      await loadDocuments(kbId);
+      // 上传成功后防抖刷新文档列表
+      debouncedLoadDocuments(kbId);
     } catch (err: any) {
-      console.error('Failed to upload document:', err);
-      const msg = err?.data?.error || '文档上传失败，请稍后再试。';
+      console.error(`Failed to upload document "${fileName}":`, err);
+      const msg = err?.data?.error || `"${fileName}" 上传失败，请稍后再试。`;
       alert(msg);
     } finally {
-      setUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      // 移除上传标记
+      setUploadingFiles(prev => {
+        const next = new Set(prev);
+        next.delete(fileName);
+        return next;
+      });
+    }
+  };
+
+  /**
+   * 处理文件选择事件 - 支持多文件并发上传
+   */
+  const handleFilesSelected = (kbId: string, files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    // 并发上传所有选中的文件
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // 不等待，并发执行
+      uploadSingleFile(kbId, file);
+    }
+
+    // 清空 input 值，允许重复选择同名文件
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -203,12 +252,17 @@ function KnowledgeBase() {
     }
   };
 
-  const getStatusBadge = (status: string) => {
+  /**
+   * 入库状态徽标 - 独立显示文档入库进度
+   */
+  const getStatusBadge = (doc: DocumentItem) => {
+    const { status } = doc;
+
     const map: Record<string, { text: string; color: string }> = {
       uploaded: { text: '待处理', color: 'bg-yellow-100 text-yellow-800' },
       processing: { text: '处理中', color: 'bg-blue-100 text-blue-800' },
-      completed: { text: '已完成', color: 'bg-green-100 text-green-800' },
-      error: { text: '失败', color: 'bg-red-100 text-red-800' },
+      completed: { text: '已入库', color: 'bg-green-100 text-green-800' },
+      error: { text: '入库失败', color: 'bg-red-100 text-red-800' },
     };
 
     const info = map[status] || { text: status, color: 'bg-gray-100 text-gray-800' };
@@ -218,6 +272,31 @@ function KnowledgeBase() {
       </span>
     );
   };
+
+  /**
+   * 目录状态徽标 - 独立显示文档目录生成进度
+   */
+  const getTocStatusBadge = (doc: DocumentItem) => {
+    const { tocStatus } = doc;
+
+    // 如果 tocStatus 不存在（旧数据），不显示
+    if (!tocStatus) return null;
+
+    const map: Record<string, { text: string; color: string }> = {
+      pending: { text: '目录待生成', color: 'bg-gray-100 text-gray-500' },
+      processing: { text: '目录生成中', color: 'bg-purple-100 text-purple-800' },
+      completed: { text: '目录已就绪', color: 'bg-teal-100 text-teal-800' },
+      error: { text: '目录生成失败', color: 'bg-orange-100 text-orange-800' },
+    };
+
+    const info = map[tocStatus] || { text: tocStatus, color: 'bg-gray-100 text-gray-800' };
+    return (
+      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${info.color}`}>
+        {info.text}
+      </span>
+    );
+  };
+
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -231,15 +310,16 @@ function KnowledgeBase() {
         </button>
       </div>
 
+      {/* 多文件上传 input */}
       <input
         ref={fileInputRef}
         type="file"
         className="hidden"
+        multiple
         accept=".txt,.md,.pdf,.doc,.docx"
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file && expandedKbId) {
-            handleUpload(expandedKbId, file);
+          if (expandedKbId) {
+            handleFilesSelected(expandedKbId, e.target.files);
           }
         }}
       />
@@ -302,10 +382,9 @@ function KnowledgeBase() {
                     <h4 className="text-sm font-semibold text-gray-600">文档列表</h4>
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={uploading}
-                      className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition disabled:opacity-50"
+                      className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition"
                     >
-                      {uploading ? '上传中...' : '+ 上传文档'}
+                      {uploadingFiles.size > 0 ? `上传中 (${uploadingFiles.size})...` : '+ 上传文档'}
                     </button>
                   </div>
 
@@ -322,15 +401,19 @@ function KnowledgeBase() {
                           key={doc.id}
                           className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded"
                         >
-                          <div className="flex items-center gap-3 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
                             <span className="text-sm font-medium truncate">{doc.name}</span>
-                            {getStatusBadge(doc.status)}
                             <span className="text-xs text-gray-400 whitespace-nowrap">
                               {(doc.fileSize / 1024).toFixed(1)} KB
                             </span>
                           </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
-                            {doc.status === 'completed' && doc.summary && (
+                            {/* 入库状态徽标 */}
+                            {getStatusBadge(doc)}
+                            {/* 目录状态徽标 */}
+                            {getTocStatusBadge(doc)}
+                            {/* 文档目录按钮：只要 tocStatus=completed 就显示 */}
+                            {doc.tocStatus === 'completed' && (
                               <button
                                 onClick={() => setSummaryDoc(doc)}
                                 className="px-2 py-0.5 text-xs text-blue-500 border border-blue-200 rounded hover:bg-blue-50 transition"
@@ -338,6 +421,7 @@ function KnowledgeBase() {
                                 文档目录
                               </button>
                             )}
+
                             <button
                               onClick={() => handleDeleteDocument(kb.id, doc.id)}
                               disabled={deletingDocId === doc.id}

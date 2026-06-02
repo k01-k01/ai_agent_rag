@@ -64,8 +64,10 @@ export interface DocumentItem {
   fileSize: number;
   status: string;
   summary?: string;
+  tocStatus?: string;
   createdAt: string;
 }
+
 
 export function listDocuments(kbId: string): Promise<DocumentItem[]> {
   return api.get(`/knowledge-bases/${kbId}/documents`) as Promise<DocumentItem[]>;
