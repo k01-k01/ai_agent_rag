@@ -4,6 +4,7 @@ import com.rag.chat.service.CacheService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -25,6 +26,9 @@ public class CacheController {
 
     @Autowired
     private CacheService cacheService;
+
+    @Autowired
+    private StringRedisTemplate redisTemplate;
 
     /**
      * 设置缓存（由 Python 侧在 Agent 生成答案后调用）
@@ -73,6 +77,29 @@ public class CacheController {
                 "success", true,
                 "message", "Cache set successfully"
         ));
+    }
+
+    /**
+     * 清空一级缓存（Redis）
+     * 使用 FLUSHDB 清空当前数据库的所有 key
+     */
+    @PostMapping("/l1/clear")
+    public ResponseEntity<Map<String, Object>> clearL1Cache() {
+        try {
+            // 获取 Redis 连接并清空当前数据库
+            redisTemplate.getConnectionFactory().getConnection().flushDb();
+            logger.info("L1 cache (Redis) cleared successfully");
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "一级缓存（Redis）已清空"
+            ));
+        } catch (Exception e) {
+            logger.error("Failed to clear L1 cache: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "error", "清空一级缓存失败: " + e.getMessage()
+            ));
+        }
     }
 
 }

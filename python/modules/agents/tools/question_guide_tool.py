@@ -1,15 +1,15 @@
 """
-Summarize Tool - 文档总结工具（Map-Reduce 分层总结）
-供 Agent 调用，对知识库中的文档内容进行总结。
+Question Guide Tool - 提问导读工具
+供 Agent 调用，当用户询问"关于某篇文章可以问什么问题"时，
+生成覆盖文档全貌的高质量提问导读。
 
 核心流程：
 1. 精确匹配文档名 → 获取 document_id
 2. 按 document_id 获取该文档的所有 chunk（不遗漏、不混入）
-3. 如果 chunk 少（≤5），直接总结
-4. 如果 chunk 多，采用 Map-Reduce 分层总结：
-   - Map：将 chunk 分组，每组分别生成局部总结
-   - Reduce：将局部总结合并，生成更高层次的总结
-   - 递归直到生成最终总结
+3. 如果 chunk 少（≤20），直接 1 次 LLM 调用生成导读
+4. 如果 chunk 多（>20），采用「主题提取 → 生成导读」两步：
+   - 主题提取：将 chunk 分组，每组提取核心主题（轻量，输出短）
+   - 生成导读：基于主题列表，一次生成覆盖全面的提问导读
 """
 import asyncio
 import json
@@ -25,19 +25,16 @@ from modules.agents.tools.retrieval_tool import get_current_knowledge_base_id
 
 logger = logging.getLogger(__name__)
 
-# 总结参数
-CHUNKS_PER_GROUP = 5       # 每组最多 5 个 chunk
-MAX_DIRECT_SUMMARY = 5     # chunk ≤5 时直接总结，不分层
-MAX_DEPTH = 3              # 最大分层深度，防止无限递归
+# 参数配置
+CHUNKS_PER_GROUP = 10       # 每组最多 10 个 chunk（主题提取用）
+MAX_DIRECT_GUIDE = 20       # chunk ≤20 时直接生成，不分步
 
 # LLM 客户端（单例）
 _client = None
 
 
 def _get_client() -> AsyncOpenAI:
-    """
-    获取或创建 LLM 客户端（单例模式）。
-    """
+    """获取或创建 LLM 客户端（单例模式）"""
     global _client
     llm_config = get_current_llm_config()
     if _client is None:
@@ -45,7 +42,7 @@ def _get_client() -> AsyncOpenAI:
             api_key=llm_config["api_key"],
             base_url=llm_config["api_base"],
         )
-        logger.info(f"Summarize client initialized with provider: {llm_config['provider']}")
+        logger.info(f"QuestionGuide client initialized with provider: {llm_config['provider']}")
     return _client
 
 
@@ -56,59 +53,58 @@ def _get_current_model() -> str:
 
 # ========== 提示词 ==========
 
-SUMMARIZE_SYSTEM_PROMPT = "你是一个专业的文档总结助手。你的任务是根据文档内容，生成简洁、准确、全面的总结。"
+SYSTEM_PROMPT = "你是一个专业的文档分析助手。你的任务是根据文档内容，生成高质量的提问导读，帮助用户快速了解可以从哪些角度向文档提问。"
 
-SUMMARIZE_GROUP_PROMPT = """请总结以下文档片段（第 {group_index} 组，共 {total_groups} 组）：
+TOPIC_EXTRACT_PROMPT = """请提取以下文档片段的核心主题（第 {group_index} 组，共 {total_groups} 组）：
 
 文档名称：{document_name}
 
 内容：
 {content}
 
-请生成该组文档片段的总结，要求：
-1. 提取关键信息、主要观点和重要细节
-2. 保持客观，不要添加原文没有的内容
-3. 语言简洁明了
-4. 如果该组内容包含多个主题，请分别列出
-5. 用中文回答"""
+请提取该组文档片段的核心主题和关键信息点，要求：
+1. 每个片段用 1-2 句话概括其核心内容
+2. 提取关键的数据、结论、观点等
+3. 保持客观，不要添加原文没有的内容
+4. 用中文回答
 
-SUMMARIZE_MERGE_PROMPT = """以下是文档 "{document_name}" 的多个局部总结（第 {level} 层合并，共 {total_parts} 个部分）：
+输出格式（简洁）：
+- [片段索引] 核心主题：<一句话概括>
+"""
 
-{parts}
+GUIDE_PROMPT = """以下是文档 "{document_name}" 的核心内容主题列表：
 
-请将这些局部总结合并为一份更完整的总结，要求：
-1. 整合所有部分的关键信息，去除重复内容
-2. 按逻辑顺序组织内容
-3. 保持客观准确
-4. 语言简洁明了
-5. 用中文回答"""
+{topics}
 
-SUMMARIZE_FINAL_PROMPT = """以下是文档 "{document_name}" 的完整总结内容：
+请基于以上内容，生成一份高质量的提问导读，帮助用户快速了解可以从哪些角度向这篇文档提问。
 
-{content}
+要求：
+1. 问题必须覆盖文档的**所有重要内容**，确保用户看了导读就不需要再去看原文
+2. 按文档的实际主题/章节维度组织问题，而不是按通用分类
+3. 每个问题都应该是**可以直接向 AI 提问的完整问题**，具体且有针对性
+4. 问题要有层次感：既有基础理解类问题，也有深度分析类问题
+5. 每个维度下至少 2-3 个问题
+6. 用中文回答
 
-请基于以上内容，生成一份最终的精炼总结，要求：
-1. 概括文档的核心主题和目的
-2. 列出主要的关键要点（3-8个）
-3. 每个要点用一句话概括
-4. 语言简洁明了
-5. 用中文回答
+输出格式：
+## 关于《{document_name}》的提问导读
 
-格式：
-## 文档总结：{document_name}
+### 📌 <主题维度一>
+- <可以直接提问的完整问题>
+- <可以直接提问的完整问题>
 
-**核心主题：** <一句话概括>
+### 📌 <主题维度二>
+- <可以直接提问的完整问题>
+- <可以直接提问的完整问题>
 
-**关键要点：**
-• <要点1>
-• <要点2>
-..."""
+...（根据文档实际内容继续）
+"""
 
 
 async def _find_document(document_name: str, knowledge_base_id: Optional[str]) -> Optional[dict]:
     """
-    根据文档名查找文档。
-    
+    根据文档名查找文档（复用 summarize_tool 的查找逻辑）。
+
     查找策略（逐级 fallback）：
     1. 精确匹配（name = query）
     2. ILIKE 模糊匹配（name ILIKE '%query%'）
@@ -116,7 +112,7 @@ async def _find_document(document_name: str, knowledge_base_id: Optional[str]) -
     4. 用 query 去检索 chunks，从检索结果中提取文档名
 
     Args:
-        document_name: 文档名或描述（如 "GROUP RPT.md" 或 "财务报告"）
+        document_name: 文档名或描述
         knowledge_base_id: 知识库 ID
 
     Returns:
@@ -175,7 +171,6 @@ async def _find_document(document_name: str, knowledge_base_id: Optional[str]) -
             return {"id": str(row["id"]), "name": row["name"]}
 
         # 策略 3：pg_trgm 全文搜索文档名
-        # 使用 similarity() 函数匹配文档名本身
         if knowledge_base_id:
             row = await conn.fetchrow(
                 """
@@ -211,7 +206,6 @@ async def _find_document(document_name: str, knowledge_base_id: Optional[str]) -
             return {"id": str(row["id"]), "name": row["name"]}
 
         # 策略 4：用 query 去检索 chunks，从检索结果中提取文档名
-        # 这可以处理用户用自然语言描述文档内容的情况
         logger.info(
             f"Trying chunk retrieval to find document for query: '{document_name}'"
         )
@@ -223,9 +217,7 @@ async def _find_document(document_name: str, knowledge_base_id: Optional[str]) -
                 knowledge_base_id=knowledge_base_id,
             )
             if top_chunks:
-                # 取第一个结果对应的文档
                 first_chunk = top_chunks[0]
-                # 用文档名再次精确查找，确保拿到正确的 document_id
                 doc_name = first_chunk.document_name
                 if knowledge_base_id:
                     row = await conn.fetchrow(
@@ -291,14 +283,14 @@ async def _get_document_chunks(document_id: str) -> list[dict]:
     return chunks
 
 
-async def _summarize_group(
+async def _extract_topics(
     chunks: list[dict],
     document_name: str,
     group_index: int,
     total_groups: int,
 ) -> str:
     """
-    对一组 chunk 生成局部总结（Map 阶段）。
+    对一组 chunk 提取核心主题（轻量操作，输出简短）。
 
     Args:
         chunks: 一组 chunk 列表
@@ -307,7 +299,7 @@ async def _summarize_group(
         total_groups: 总组数
 
     Returns:
-        局部总结文本
+        主题提取文本（简短）
     """
     content_parts = []
     for chunk in chunks:
@@ -321,10 +313,10 @@ async def _summarize_group(
         response = await client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": SUMMARIZE_GROUP_PROMPT.format(
+                    "content": TOPIC_EXTRACT_PROMPT.format(
                         group_index=group_index,
                         total_groups=total_groups,
                         document_name=document_name,
@@ -333,85 +325,36 @@ async def _summarize_group(
                 },
             ],
             temperature=0.3,
-            max_tokens=1024,
+            max_tokens=512,  # 输出短，速度快
         )
-        summary = response.choices[0].message.content.strip()
+        topics = response.choices[0].message.content.strip()
         logger.info(
-            f"Group summary (group {group_index}/{total_groups}): "
-            f"{len(summary)} chars for {len(chunks)} chunks"
+            f"Topic extraction (group {group_index}/{total_groups}): "
+            f"{len(topics)} chars for {len(chunks)} chunks"
         )
-        return summary
+        return topics
     except Exception as e:
-        logger.error(f"Failed to summarize group {group_index}: {e}")
-        # 如果 LLM 调用失败，直接拼接原文作为降级方案
-        return f"[组 {group_index} 总结失败，原文内容]\n{content[:2000]}"
+        logger.error(f"Failed to extract topics for group {group_index}: {e}")
+        # 降级：直接输出片段索引和内容前 200 字
+        fallback = []
+        for chunk in chunks:
+            fallback.append(f"[片段 {chunk['index']}] {chunk['content'][:200]}")
+        return "\n".join(fallback)
 
 
-async def _merge_summaries(
-    summaries: list[str],
-    document_name: str,
-    level: int,
-) -> str:
-    """
-    合并多个局部总结（Reduce 阶段）。
-
-    Args:
-        summaries: 局部总结列表
-        document_name: 文档名
-        level: 当前合并层级
-
-    Returns:
-        合并后的总结
-    """
-    parts_text = ""
-    for i, summary in enumerate(summaries, 1):
-        parts_text += f"--- 第 {i} 部分 ---\n{summary}\n\n"
-
-    try:
-        client = _get_client()
-        model = _get_current_model()
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": SUMMARIZE_MERGE_PROMPT.format(
-                        document_name=document_name,
-                        level=level,
-                        total_parts=len(summaries),
-                        parts=parts_text,
-                    ),
-                },
-            ],
-            temperature=0.3,
-            max_tokens=1024,
-        )
-        merged = response.choices[0].message.content.strip()
-        logger.info(
-            f"Merge summary (level {level}): {len(merged)} chars "
-            f"from {len(summaries)} parts"
-        )
-        return merged
-    except Exception as e:
-        logger.error(f"Failed to merge summaries at level {level}: {e}")
-        # 降级：直接拼接
-        return "\n\n".join(summaries)
-
-
-async def _generate_final_summary(
-    content: str,
+async def _generate_guide(
+    topics: str,
     document_name: str,
 ) -> str:
     """
-    生成最终的精炼总结。
+    基于主题列表生成提问导读。
 
     Args:
-        content: 完整总结内容
+        topics: 主题列表文本
         document_name: 文档名
 
     Returns:
-        最终总结
+        提问导读文本
     """
     try:
         client = _get_client()
@@ -419,130 +362,94 @@ async def _generate_final_summary(
         response = await client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": SUMMARIZE_FINAL_PROMPT.format(
+                    "content": GUIDE_PROMPT.format(
                         document_name=document_name,
-                        content=content,
+                        topics=topics,
                     ),
                 },
             ],
-            temperature=0.3,
-            max_tokens=1024,
+            temperature=0.5,  # 适当提高温度，让问题更有创造性
+            max_tokens=2048,
         )
-        final = response.choices[0].message.content.strip()
+        guide = response.choices[0].message.content.strip()
         logger.info(
-            f"Final summary for '{document_name}': {len(final)} chars"
+            f"Generated question guide for '{document_name}': {len(guide)} chars"
         )
-        return final
+        return guide
     except Exception as e:
-        logger.error(f"Failed to generate final summary: {e}")
-        return content
+        logger.error(f"Failed to generate question guide: {e}")
+        return f"生成提问导读时出错: {str(e)}"
 
 
-async def _map_reduce_summarize(
+async def _generate_guide_direct(
     chunks: list[dict],
     document_name: str,
-    depth: int = 1,
 ) -> str:
     """
-    Map-Reduce 分层总结核心逻辑。
-    
-    优化：
-    1. Map 阶段并行化：使用 asyncio.gather 并行执行所有组的总结
-    2. Reduce 阶段单次合并：不再递归，一次性合并所有局部总结
+    直接基于 chunks 生成提问导读（chunk 少时使用，1 次 LLM 调用）。
 
-    Args:
-        chunks: chunk 列表
-        document_name: 文档名
-        depth: 当前递归深度
-
-    Returns:
-        总结文本
+    将 chunks 内容拼接后，直接让 LLM 生成导读。
     """
-    # 如果 chunk 数量少，直接总结
-    if len(chunks) <= MAX_DIRECT_SUMMARY or depth >= MAX_DEPTH:
-        if len(chunks) <= MAX_DIRECT_SUMMARY:
-            logger.info(
-                f"Direct summary: {len(chunks)} chunks (depth={depth})"
-            )
-        else:
-            logger.info(
-                f"Max depth reached (depth={MAX_DEPTH}), "
-                f"synthesizing {len(chunks)} chunks directly"
-            )
-        return await _summarize_group(
-            chunks=chunks,
-            document_name=document_name,
-            group_index=1,
-            total_groups=1,
+    content_parts = []
+    for chunk in chunks:
+        content_parts.append(f"[片段 {chunk['index']}]\n{chunk['content']}")
+
+    content = "\n\n".join(content_parts)
+
+    try:
+        client = _get_client()
+        model = _get_current_model()
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": GUIDE_PROMPT.format(
+                        document_name=document_name,
+                        topics=content,
+                    ),
+                },
+            ],
+            temperature=0.5,
+            max_tokens=2048,
         )
-
-    # Map 阶段：将 chunk 分组，每组分别生成局部总结（并行执行）
-    groups = []
-    for i in range(0, len(chunks), CHUNKS_PER_GROUP):
-        groups.append(chunks[i:i + CHUNKS_PER_GROUP])
-
-    total_groups = len(groups)
-    logger.info(
-        f"Map phase (depth={depth}): {len(chunks)} chunks → "
-        f"{total_groups} groups (parallel)"
-    )
-
-    # 并行执行所有组的总结
-    group_summaries = await asyncio.gather(*[
-        _summarize_group(
-            chunks=group,
-            document_name=document_name,
-            group_index=i,
-            total_groups=total_groups,
+        guide = response.choices[0].message.content.strip()
+        logger.info(
+            f"Direct guide for '{document_name}': {len(guide)} chars "
+            f"from {len(chunks)} chunks"
         )
-        for i, group in enumerate(groups, 1)
-    ])
-
-    # Reduce 阶段：如果只有一组总结，直接返回
-    if len(group_summaries) == 1:
-        return group_summaries[0]
-
-    # 多组总结需要合并
-    # 优化：不再递归，直接一次性合并所有局部总结
-    # 使用更大的 max_tokens 以容纳更多内容
-    logger.info(
-        f"Reduce phase (depth={depth}): merging {len(group_summaries)} summaries "
-        f"in one pass"
-    )
-    merged = await _merge_summaries(
-        summaries=group_summaries,
-        document_name=document_name,
-        level=depth,
-    )
-
-    return merged
+        return guide
+    except Exception as e:
+        logger.error(f"Failed to generate direct guide: {e}")
+        return f"生成提问导读时出错: {str(e)}"
 
 
 @tool
-async def summarize_document(
+async def generate_questions(
     query: str,
     knowledge_base_id: Optional[str] = None,
 ) -> str:
     """
-    对知识库中指定的文档进行总结。
-    当用户要求"总结一下"、"概括"、"归纳"某篇文档时使用此工具。
-    会精确匹配文档名，获取该文档的所有内容，然后生成总结。
+    为知识库中的指定文档生成提问导读。
+    当用户询问"关于某篇文章可以问什么问题"、"有什么问题可以问"、"提问方向"等时使用此工具。
+    会精确匹配文档名，获取该文档的所有内容，然后生成覆盖文档全貌的提问导读。
 
     Args:
-        query: 需要总结的文档名称或主题（如 "GROUP RPT.md"）
+        query: 需要生成提问导读的文档名称或主题（如 "GROUP RPT.md"）
         knowledge_base_id: 知识库 ID（可选，不传则检索所有知识库）
 
     Returns:
-        文档的完整总结
+        文档的提问导读
     """
     # 如果调用时没有传 knowledge_base_id，尝试使用全局变量中的值
     effective_kb_id = knowledge_base_id or get_current_knowledge_base_id()
 
     logger.info(
-        f"Tool 'summarize_document' called with query: '{query}' "
+        f"Tool 'generate_questions' called with query: '{query}' "
         f"(kb_id={effective_kb_id or 'all'})"
     )
 
@@ -563,34 +470,59 @@ async def summarize_document(
     chunks = await _get_document_chunks(document_id)
     if not chunks:
         logger.info(f"No chunks found for document '{document_name}'")
-        return f"文档「{document_name}」中没有找到可总结的内容片段。"
+        return f"文档「{document_name}」中没有找到可分析的内容片段。"
 
-    # 第三步：Map-Reduce 分层总结
+    # 第三步：根据 chunk 数量选择策略
     logger.info(
-        f"Starting Map-Reduce summarization for '{document_name}': "
+        f"Generating question guide for '{document_name}': "
         f"{len(chunks)} chunks"
     )
 
-    merged_summary = await _map_reduce_summarize(
-        chunks=chunks,
-        document_name=document_name,
-    )
+    if len(chunks) <= MAX_DIRECT_GUIDE:
+        # chunk 少，直接生成（1 次 LLM 调用）
+        logger.info(f"Direct guide mode: {len(chunks)} chunks")
+        guide = await _generate_guide_direct(chunks, document_name)
+        guide_method = "直接生成"
+    else:
+        # chunk 多，先提取主题再生成（最多 2 次 LLM 调用）
+        logger.info(f"Two-step guide mode: {len(chunks)} chunks")
 
-    # 第四步：生成最终精炼总结
-    final_summary = await _generate_final_summary(
-        content=merged_summary,
-        document_name=document_name,
-    )
+        # 分组提取主题（并行执行）
+        groups = []
+        for i in range(0, len(chunks), CHUNKS_PER_GROUP):
+            groups.append(chunks[i:i + CHUNKS_PER_GROUP])
+
+        total_groups = len(groups)
+        logger.info(
+            f"Topic extraction phase: {len(chunks)} chunks → "
+            f"{total_groups} groups (parallel)"
+        )
+
+        # 并行提取所有组的主题
+        topic_list = await asyncio.gather(*[
+            _extract_topics(
+                chunks=group,
+                document_name=document_name,
+                group_index=i,
+                total_groups=total_groups,
+            )
+            for i, group in enumerate(groups, 1)
+        ])
+
+        # 合并主题列表
+        all_topics = "\n\n".join([
+            f"--- 第 {i} 组 ---\n{topic}"
+            for i, topic in enumerate(topic_list, 1)
+        ])
+
+        # 生成提问导读
+        guide = await _generate_guide(all_topics, document_name)
+        guide_method = "主题提取 + 生成"
 
     # 构建 sources 信息（用于前端展示）
-    # 根据 chunk 数量决定描述方式
-    if len(chunks) <= MAX_DIRECT_SUMMARY:
-        summary_method = "直接总结"
-    else:
-        summary_method = "Map-Reduce 分层总结"
     sources = [{
         "title": document_name,
-        "content": f"文档共 {len(chunks)} 个片段，使用 {summary_method} 生成",
+        "content": f"文档共 {len(chunks)} 个片段，使用「{guide_method}」方式生成提问导读",
         "score": 1.0,
     }]
 
@@ -598,13 +530,14 @@ async def summarize_document(
     sources_json = json.dumps(sources, ensure_ascii=False)
 
     result = (
-        f"已对文档「{document_name}」完成总结（共 {len(chunks)} 个内容片段）：\n\n"
-        f"{final_summary}\n\n"
+        f"已为文档「{document_name}」生成提问导读（共 {len(chunks)} 个内容片段，"
+        f"使用「{guide_method}」方式）：\n\n"
+        f"{guide}\n\n"
         f"__SOURCES__:{sources_json}"
     )
 
     logger.info(
-        f"Tool 'summarize_document' completed for '{document_name}': "
-        f"{len(chunks)} chunks, {len(final_summary)} chars summary"
+        f"Tool 'generate_questions' completed for '{document_name}': "
+        f"{len(chunks)} chunks, {len(guide)} chars guide"
     )
     return result

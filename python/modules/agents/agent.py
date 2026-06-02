@@ -28,6 +28,7 @@ from modules.agents.tools.retrieval_tool import (
 )
 from modules.agents.tools.datetime_tool import get_current_datetime
 from modules.agents.tools.summarize_tool import summarize_document
+from modules.agents.tools.question_guide_tool import generate_questions
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +136,8 @@ class LangGraphAgent:
             streaming=True,
         )
 
-        # 定义工具集（现在有 3 个工具）
-        self.tools = [retrieve_knowledge, summarize_document, get_current_datetime]
+        # 定义工具集（现在有 4 个工具）
+        self.tools = [retrieve_knowledge, summarize_document, generate_questions, get_current_datetime]
 
         # 创建 ReAct Agent
         # create_react_agent 会自动处理：
@@ -279,7 +280,7 @@ class LangGraphAgent:
                             del accumulated_tool_calls[tc_id]
 
                             # 自动注入 knowledge_base_id
-                            if tool_name in ("retrieve_knowledge", "summarize_document"):
+                            if tool_name in ("retrieve_knowledge", "summarize_document", "generate_questions"):
                                 args["knowledge_base_id"] = knowledge_base_id
                                 logger.info(
                                     f"Injected knowledge_base_id into tool call: "
@@ -504,6 +505,7 @@ def _make_observation_summary(tool_name: str, tool_args: dict, tool_result: str)
     tool_display_name = {
         "retrieve_knowledge": "检索知识库",
         "summarize_document": "总结文档",
+        "generate_questions": "生成提问导读",
         "get_current_datetime": "获取当前时间",
     }.get(tool_name, tool_name)
 
@@ -515,6 +517,9 @@ def _make_observation_summary(tool_name: str, tool_args: dict, tool_result: str)
     elif tool_name == "summarize_document":
         filename = tool_args.get("filename", "")
         args_summary = f'文档: "{filename}"'
+    elif tool_name == "generate_questions":
+        query = tool_args.get("query", "")
+        args_summary = f'文档: "{query}"'
 
     # 获取结果长度/数量摘要
     result_summary = ""

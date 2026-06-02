@@ -8,10 +8,10 @@ function App() {
       <nav className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 flex gap-6 py-3">
           <Link to="/" className="text-blue-600 font-medium hover:text-blue-800">
-            知识库管理
+            Knowledge Base
           </Link>
           <Link to="/chat" className="text-blue-600 font-medium hover:text-blue-800">
-            RAG
+            RAG Agent Chat
           </Link>
         </div>
       </nav>

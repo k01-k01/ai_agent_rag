@@ -252,6 +252,12 @@ async def _stream_chat_response(
                         "event": "message",
                         "data": json.dumps({"type": "agent", "content": "📝 summarize_document"}),
                     }
+                elif tool_name == "generate_questions":
+                    agent_type = "rag"
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({"type": "agent", "content": "❓ generate_questions"}),
+                    }
                 elif tool_name == "get_current_datetime":
                     yield {
                         "event": "message",
@@ -496,6 +502,27 @@ async def update_conversation_title(conversation_id: str, request: dict):
     if not success:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"success": True, "message": "Title updated"}
+
+
+# ==================== 缓存管理 API ====================
+
+
+@app.post("/api/cache/l2/clear")
+async def clear_l2_cache():
+    """
+    清空二级缓存（pgvector cache_entries 表）。
+    """
+    from db_pool import get_db_pool
+
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM cache_entries")
+            logger.info("L2 cache cleared successfully")
+            return {"success": True, "message": "二级缓存已清空"}
+    except Exception as e:
+        logger.error(f"Failed to clear L2 cache: {e}")
+        raise HTTPException(status_code=500, detail=f"清空二级缓存失败: {str(e)}")
 
 
 # ==================== LLM 配置 API ====================

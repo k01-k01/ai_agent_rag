@@ -250,6 +250,13 @@ async def start_consumer():
     redis = aioredis.from_url(f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}")
 
     try:
+        # 确保 stream 存在：先检查 key 是否存在，不存在则创建空 stream
+        stream_exists = await redis.exists(STREAM_KEY)
+        if not stream_exists:
+            # 发送一个空消息来创建 stream
+            await redis.xadd(STREAM_KEY, {"init": "1"}, maxlen=1)
+            logger.info(f"Created stream '{STREAM_KEY}' with init message")
+
         # 创建消费者组（如果不存在）
         try:
             await redis.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
@@ -289,6 +296,13 @@ async def start_consumer():
                             task = {}
                             for key, value in fields.items():
                                 task[key.decode()] = json.loads(value.decode())
+
+                            # 跳过初始化消息（用于创建 stream 的占位消息）
+                            if "init" in task:
+                                logger.info(f"Skipping init message {message_id}")
+                                await redis.xack(STREAM_KEY, GROUP_NAME, message_id)
+                                continue
+
                             pending_tasks.append(task)
                             message_ids.append(message_id)
                         except Exception as e:

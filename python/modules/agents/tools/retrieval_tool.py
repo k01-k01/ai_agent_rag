@@ -33,14 +33,70 @@ def get_current_knowledge_base_id() -> Optional[str]:
     return _current_knowledge_base_id
 
 
-def _build_context(chunks: list[ChunkResult]) -> str:
-    """将检索到的 chunks 构建为 LLM 上下文"""
+def _build_context(chunks: list[ChunkResult], max_tokens: int = 3000) -> str:
+    """
+    将检索到的 chunks 构建为 LLM 上下文。
+    
+    优化：
+    1. 按文档分组排序，同一文档的 chunk 聚在一起，LLM 阅读更连贯
+    2. 带 token 估算截断保护，避免上下文溢出
+    
+    Args:
+        chunks: 检索结果列表（已按 Reranker 分数降序）
+        max_tokens: 最大 token 数（默认 3000），超出后截断
+    
+    Returns:
+        格式化后的上下文字符串
+    """
+    from collections import OrderedDict
+    
+    # 简单估算 token 数：1 个中文字 ≈ 2 tokens，1 个非中文字 ≈ 0.3 tokens
+    def estimate_tokens(text: str) -> int:
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        other_chars = len(text) - chinese_chars
+        return chinese_chars * 2 + int(other_chars * 0.3)
+    
+    # 第一步：按文档分组（保持文档间按最高分 chunk 排序）
+    # 使用 OrderedDict 保持首次出现的顺序
+    doc_groups = OrderedDict()
+    for chunk in chunks:
+        key = (chunk.knowledge_base_name, chunk.document_name)
+        if key not in doc_groups:
+            doc_groups[key] = []
+        doc_groups[key].append(chunk)
+    
+    # 第二步：构建上下文，组内保持 Reranker 分数降序
     context_parts = []
-    for i, chunk in enumerate(chunks, 1):
-        context_parts.append(
-            f"[来源 {i}: {chunk.knowledge_base_name} / {chunk.document_name}]\n"
-            f"{chunk.content}"
-        )
+    total_tokens = 0
+    part_index = 0
+    
+    for (kb_name, doc_name), doc_chunks in doc_groups.items():
+        for chunk in doc_chunks:
+            part = (
+                f"[来源 {part_index + 1}: {kb_name} / {doc_name}]\n"
+                f"{chunk.content}"
+            )
+            part_tokens = estimate_tokens(part)
+            
+            # 检查是否超出 token 限制
+            if total_tokens + part_tokens > max_tokens:
+                remaining = max_tokens - total_tokens
+                if remaining > 50:  # 至少保留有意义的长度
+                    # 截断当前 chunk 的内容
+                    truncated_content = chunk.content[:remaining * 2]  # 粗略截断
+                    context_parts.append(
+                        f"[来源 {part_index + 1}: {kb_name} / {doc_name}]\n"
+                        f"{truncated_content}...[已截断]"
+                    )
+                break  # 超出限制，停止添加更多 chunk
+            
+            context_parts.append(part)
+            total_tokens += part_tokens
+            part_index += 1
+        else:
+            continue  # 内层循环正常结束（未 break），继续外层循环
+        break  # 内层循环 break 了，也跳出外层循环
+    
     return "\n\n".join(context_parts)
 
 

@@ -27,6 +27,8 @@ import {
   deleteConversation,
   getCurrentLLMConfig,
   updateLLMConfig,
+  clearL1Cache,
+  clearL2Cache,
   KnowledgeBase,
   ChatMessage,
   SSEChatEvent,
@@ -62,6 +64,8 @@ function Chat() {
   const [configForm, setConfigForm] = useState({ api_key: '', api_base: '', model: '' });
   const [isSavingLlmConfig, setIsSavingLlmConfig] = useState(false);
   const [llmConfigMessage, setLlmConfigMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [cacheMessage, setCacheMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [clearingCache, setClearingCache] = useState<'l1' | 'l2' | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -413,6 +417,40 @@ function Chat() {
     return msg.toolCalls || null;
   };
 
+  // 清除一级缓存（Redis）
+  const handleClearL1Cache = useCallback(async () => {
+    if (!window.confirm('确定要清空一级缓存（Redis）吗？')) return;
+    setClearingCache('l1');
+    setCacheMessage(null);
+    try {
+      await clearL1Cache();
+      setCacheMessage({ type: 'success', text: '✅ 一级缓存（Redis）已清空' });
+    } catch (err) {
+      console.error('Failed to clear L1 cache:', err);
+      setCacheMessage({ type: 'error', text: '❌ 清空一级缓存失败，请检查服务是否正常运行' });
+    } finally {
+      setClearingCache(null);
+      setTimeout(() => setCacheMessage(null), 3000);
+    }
+  }, []);
+
+  // 清除二级缓存（pgvector）
+  const handleClearL2Cache = useCallback(async () => {
+    if (!window.confirm('确定要清空二级缓存（语义缓存）吗？')) return;
+    setClearingCache('l2');
+    setCacheMessage(null);
+    try {
+      await clearL2Cache();
+      setCacheMessage({ type: 'success', text: '✅ 二级缓存（语义缓存）已清空' });
+    } catch (err) {
+      console.error('Failed to clear L2 cache:', err);
+      setCacheMessage({ type: 'error', text: '❌ 清空二级缓存失败，请检查服务是否正常运行' });
+    } finally {
+      setClearingCache(null);
+      setTimeout(() => setCacheMessage(null), 3000);
+    }
+  }, []);
+
   return (
     <div className="flex h-[calc(100vh-3rem)] gap-0">
       {/* 左侧对话列表侧边栏 */}
@@ -470,7 +508,7 @@ function Chat() {
                 )}
               </svg>
             </button>
-            <h1 className="text-2xl font-bold">聊天</h1>
+            <h1 className="text-2xl font-bold">Agent</h1>
             {currentToolName && (
               <span className="inline-flex items-center text-xs px-2 py-0.5 rounded-full font-medium animate-pulse bg-orange-100 text-orange-800">
                 {currentToolName}
@@ -493,6 +531,44 @@ function Chat() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
+            </button>
+
+            {/* 清除一级缓存按钮（Redis） */}
+            <button
+              onClick={handleClearL1Cache}
+              disabled={clearingCache === 'l1'}
+              className="p-2 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded-lg transition-colors disabled:opacity-50"
+              title="清空一级缓存（Redis）"
+            >
+              {clearingCache === 'l1' ? (
+                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              )}
+            </button>
+
+            {/* 清除二级缓存按钮（pgvector） */}
+            <button
+              onClick={handleClearL2Cache}
+              disabled={clearingCache === 'l2'}
+              className="p-2 text-purple-500 hover:text-purple-700 hover:bg-purple-50 rounded-lg transition-colors disabled:opacity-50"
+              title="清空二级缓存（语义缓存）"
+            >
+              {clearingCache === 'l2' ? (
+                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              )}
             </button>
           </div>
 
@@ -538,8 +614,8 @@ function Chat() {
         <div className="flex-1 overflow-y-auto border rounded-lg bg-white p-4 mb-4">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-400">
-              <p className="text-lg mb-2">开始一段新对话</p>
-              <p className="text-sm">选择知识库后发送消息，或直接与 AI 聊天</p>
+              <p className="text-lg mb-2">Rag&Summarize&Guide</p>
+              <p className="text-sm">选择知识库后发送消息，与 AI 聊天</p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -666,7 +742,7 @@ function Chat() {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="请先选择知识库，再输入消息... (Enter 发送, Shift+Enter 换行)"
+                placeholder="请先选择知识库，再输入消息，你可以让我帮你总结知识库中的文档、回答关于知识库的问题，或者想知道可以对知识库文档提问什么问题等..."
                 className="w-full border rounded-lg px-4 py-2.5 pr-12 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                 rows={2}
                 disabled={isLoading}
@@ -781,6 +857,15 @@ function Chat() {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* 缓存操作提示消息 */}
+        {cacheMessage && (
+          <div className={`fixed bottom-4 right-4 p-3 rounded-lg shadow-lg z-50 text-sm ${
+            cacheMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+          }`}>
+            {cacheMessage.text}
           </div>
         )}
       </div>

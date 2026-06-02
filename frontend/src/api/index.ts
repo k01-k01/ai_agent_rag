@@ -277,6 +277,24 @@ export function updateConversationTitle(id: string, title: string): Promise<{ su
   return api.put(`/conversations/${id}/title`, { title }) as Promise<{ success: boolean; message: string }>;
 }
 
+// ==================== 缓存管理 API ====================
+
+/**
+ * 清除一级缓存（Redis）
+ * 调用 Java chat-service 的 /api/chat/cache/l1/clear 接口
+ */
+export function clearL1Cache(): Promise<{ success: boolean; message: string }> {
+  return api.post('/chat/cache/l1/clear') as Promise<{ success: boolean; message: string }>;
+}
+
+/**
+ * 清除二级缓存（pgvector cache_entries 表）
+ * 调用 Python 后端的 /api/cache/l2/clear 接口
+ */
+export function clearL2Cache(): Promise<{ success: boolean; message: string }> {
+  return api.post('/cache/l2/clear') as Promise<{ success: boolean; message: string }>;
+}
+
 // ==================== LLM 配置 API ====================
 
 export interface LLMConfig {
