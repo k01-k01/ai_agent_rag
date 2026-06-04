@@ -1,13 +1,18 @@
-<img width="2559" height="1436" alt="f4b18891c2f7b2cf9a301572c57c9b6f" src="https://github.com/user-attachments/assets/e0c14fe6-59f2-40db-9918-0b4060386308" /><img width="2559" height="1444" alt="07521f2df1d0791b92ce99206ab0bb07" src="https://github.com/user-attachments/assets/bad0d9dc-07bb-40ab-b606-08c85f9b5ae6" /><img width="2552" height="1440" alt="0d91163c845f8a2ab7087cd91bb36001" src="https://github.com/user-attachments/assets/f76d0f88-d311-40ba-bbbd-74703979574f" /># 知识库页面及上传展示
+# 知识库页面及上传展示
+
+<img width="2530" height="1421" alt="3a8280120ee9726cc7f79dae87f69f92" src="https://github.com/user-attachments/assets/7dcaf417-1d53-4039-a0be-c8bcd179b27f" />
 
 
-<img width="2530" height="1421" alt="微信图片_20260602150120_328_8" src="https://github.com/user-attachments/assets/208ff1ee-6b9b-4b27-924b-51b3216c747d" />
-<img width="2541" height="1436" alt="微信图片_20260602150148_331_8" src="https://github.com/user-attachments/assets/e858f72d-e19a-4be7-b5ad-9c20c4ded1c3" />
 
 
-<img width="2544" height="1431" alt="微信图片_20260602150202_332_8" src="https://github.com/user-attachments/assets/62dc49b2-065a-4fbe-ba96-356babd45e40" />
+<img width="2541" height="1436" alt="753c2db3aaa9c67f2557d095e754658f" src="https://github.com/user-attachments/assets/be84d58a-0aaf-4cf9-ac6a-520681f31a8e" />
 
-<img width="2543" height="1430" alt="微信图片_20260602150256_333_8" src="https://github.com/user-attachments/assets/b930c64a-af2a-40a4-b6c9-fa3acd89f6e2" />
+
+<img width="2544" height="1431" alt="a4378badf21137d0ff7ee60a19ffbcc8" src="https://github.com/user-attachments/assets/a16b973b-482c-4680-954d-483f6e272d00" />
+
+
+<img width="2543" height="1430" alt="45bfec5180fb37c04ca328da9e2c5d3a" src="https://github.com/user-attachments/assets/c3192208-fbca-4bfb-8f8e-d1a450cf9bf6" />
+
 
 
 # Agent聊天页面及效果展示
