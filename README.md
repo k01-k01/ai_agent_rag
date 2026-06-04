@@ -1,31 +1,48 @@
-# 知识库页面及上传展示
+<img width="2559" height="1436" alt="f4b18891c2f7b2cf9a301572c57c9b6f" src="https://github.com/user-attachments/assets/e0c14fe6-59f2-40db-9918-0b4060386308" /><img width="2559" height="1444" alt="07521f2df1d0791b92ce99206ab0bb07" src="https://github.com/user-attachments/assets/bad0d9dc-07bb-40ab-b606-08c85f9b5ae6" /><img width="2552" height="1440" alt="0d91163c845f8a2ab7087cd91bb36001" src="https://github.com/user-attachments/assets/f76d0f88-d311-40ba-bbbd-74703979574f" /># 知识库页面及上传展示
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-16-50-31-9a1753f6106e43848c1d0cf8a7124329.png?msec=1780538864938)
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-16-50-42-e05522b81e186d948b05197443fa7258.png?msec=1780538864939)![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-16-51-04-d54840856e1481c375c3994f3cf6dccb.png?msec=1780538864937)
+<img width="2530" height="1421" alt="微信图片_20260602150120_328_8" src="https://github.com/user-attachments/assets/208ff1ee-6b9b-4b27-924b-51b3216c747d" />
+<img width="2541" height="1436" alt="微信图片_20260602150148_331_8" src="https://github.com/user-attachments/assets/e858f72d-e19a-4be7-b5ad-9c20c4ded1c3" />
 
-# Agent聊天页面效果展示
+
+<img width="2544" height="1431" alt="微信图片_20260602150202_332_8" src="https://github.com/user-attachments/assets/62dc49b2-065a-4fbe-ba96-356babd45e40" />
+
+<img width="2543" height="1430" alt="微信图片_20260602150256_333_8" src="https://github.com/user-attachments/assets/b930c64a-af2a-40a4-b6c9-fa3acd89f6e2" />
+
+
+# Agent聊天页面及效果展示
 
 ### 1.generate_questions Tool
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-03-20-e15bad1d99a7c4e85f4e0fd3cafb9021.png?msec=1780538864937)![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-03-30-a81fd11847779a80d35c1f03355bd131.png?msec=1780538864932)
+<img width="2549" height="1442" alt="74a224206dae4bc4f4203f881141ab70" src="https://github.com/user-attachments/assets/8cac7606-7699-4bac-ab66-706e300ba827" />
+<img width="2559" height="1437" alt="a3374ce5be17997737ff71725071449d" src="https://github.com/user-attachments/assets/5fb6e3ba-8d63-4d27-b2e6-975901582460" />
+<img width="2558" height="1436" alt="434f197b063287c90caef0563ba4c678" src="https://github.com/user-attachments/assets/73b1f5b6-d950-45cb-b8a1-252eb6a199d0" />
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-08-27-fca455e5386d1997959b5fe869bcbf43.png?msec=1780538864942)
 
 ### 2.retrieve_knowledge Tool
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-07-54-634dbf151f78c852bdb34fea3ac90a6e.png?msec=1780538864943)![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-07-48-996e0ce4f978633879f5502e708b72c2.png?msec=1780538864943)
+<img width="2552" height="1440" alt="0d91163c845f8a2ab7087cd91bb36001" src="https://github.com/user-attachments/assets/3731ffdc-a5bb-40d5-b34e-3b4c5e61a4f0" />
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-08-38-349c2e8ac34092236dd1a5e4f492c4ee.png?msec=1780538864942)
+<img width="2559" height="1435" alt="5122aa16ae0da0065f25a04ed9777cf7" src="https://github.com/user-attachments/assets/8801366b-1c6c-42d4-9db5-29d3577e3462" />
+
+<img width="2559" height="1444" alt="07521f2df1d0791b92ce99206ab0bb07" src="https://github.com/user-attachments/assets/54ed0f1e-7322-4111-a392-504a27957d62" />
 
 ### 3.summarize_document Tool
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-09-00-5ae1eaec45e608bec0a5c66db38ba907.png?msec=1780538864939)
+<img width="2559" height="1443" alt="77513ce50130f15dfdb443c528b66d73" src="https://github.com/user-attachments/assets/fe8bb0a1-ba91-4dbb-a04f-e48cf5217c9d" />
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-09-06-2604cbcd308d9ee12cf1c4c37ac3cfea.png?msec=1780538864941)
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-09-14-3c5d60c6e0948a4d03a7d70c1c80242d.png?msec=1780538864941)
+<img width="2559" height="1436" alt="f4b18891c2f7b2cf9a301572c57c9b6f" src="https://github.com/user-attachments/assets/29305c2c-b63d-44dc-98c8-d5bedf3fba6a" />
+
+
+
+<img width="2554" height="1440" alt="533f14d07d9a0ee90b0ddbd9525ebde1" src="https://github.com/user-attachments/assets/a2d3fc56-e773-43d1-b0b8-9bf29355c8a3" />
+
 
 ### 4.两级缓存机制
+<img width="2558" height="1443" alt="46dee4b9cc07a0acadc342df1071e49d" src="https://github.com/user-attachments/assets/1bad7532-b335-4061-8344-f231753ff8a0" />
 
-![](file://C:\Users\20574\AppData\Roaming\marktext\images\2026-06-03-17-09-36-a7cc94588beee482f2a8cc502adb09fa.png?msec=1780538864943)
+
+
+<img width="2559" height="1444" alt="556f1c53cc8d2ea641ec921c6537ebb7" src="https://github.com/user-attachments/assets/d3aa5c9d-695b-403a-9cc8-0d63f333ff22" />
+
